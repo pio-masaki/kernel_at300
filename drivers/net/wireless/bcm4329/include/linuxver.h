@@ -438,7 +438,7 @@ pci_restore_state(struct pci_dev *dev, u32 *buffer)
 { \
 	kill_proc(pid, sig, 1); \
 }
-#endif
+#endif 
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 0))
 #define netdev_priv(dev) dev->priv

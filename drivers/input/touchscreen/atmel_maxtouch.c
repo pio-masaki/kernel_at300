@@ -863,8 +863,10 @@ ssize_t object_read(struct file *file, char __user *usrbuf, size_t count, loff_t
 
 	//printk(KERN_INFO "objs type:%d addr:0x%X size:%d\n", object->type, object->chip_addr, object->size);
 	num = snprintf(buf, count, "%s: Addr=0x%04X, Size=%d\n", object_type_name[object->type], object->chip_addr, object->size);
-	if (num >= count)
+	if (num >= count) {
+		kfree(buf);
 		return -ENOMEM;
+	}
 
 	mxt_read_block(client, object->chip_addr, object->size-1, message);
 	for (i = 0; i < object->size; i++) {

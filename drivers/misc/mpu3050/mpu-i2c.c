@@ -1,6 +1,6 @@
 /*
  $License:
-    Copyright (C) 2011 InvenSense Corporation, All Rights Reserved.
+    Copyright (C) 2010 InvenSense Corporation, All Rights Reserved.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -42,7 +42,7 @@ int sensor_i2c_write(struct i2c_adapter *i2c_adap,
 
 	msgs[0].addr = address;
 	msgs[0].flags = 0;	/* write */
-	msgs[0].buf = (unsigned char *)data;
+	msgs[0].buf = (unsigned char *) data;
 	msgs[0].len = len;
 
 	res = i2c_transfer(i2c_adap, msgs, 1);
@@ -64,7 +64,8 @@ int sensor_i2c_write_register(struct i2c_adapter *i2c_adap,
 }
 
 int sensor_i2c_read(struct i2c_adapter *i2c_adap,
-		    unsigned char address, unsigned char reg,
+		    unsigned char address,
+		    unsigned char reg,
 		    unsigned int len, unsigned char *data)
 {
 	struct i2c_msg msgs[2];
@@ -180,7 +181,7 @@ int mpu_memory_write(struct i2c_adapter *i2c_adap,
 
 	msgs[2].addr = mpu_addr;
 	msgs[2].flags = 0;
-	msgs[2].buf = (unsigned char *)buf;
+	msgs[2].buf = (unsigned char *) buf;
 	msgs[2].len = len + 1;
 
 	ret = i2c_transfer(i2c_adap, msgs, 3);

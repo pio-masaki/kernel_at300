@@ -1,7 +1,25 @@
 /*
  * Console support for hndrte.
  *
- * $Copyright Open Broadcom Corporation$
+ * Copyright (C) 1999-2011, Broadcom Corporation
+ * 
+ *         Unless you and Broadcom execute a separate written software license
+ * agreement governing use of this software, this software is licensed to you
+ * under the terms of the GNU General Public License version 2 (the "GPL"),
+ * available at http://www.broadcom.com/licenses/GPLv2.php, with the
+ * following added to such license:
+ * 
+ *      As a special exception, the copyright holders of this software give you
+ * permission to link this software with independent modules, and to copy and
+ * distribute the resulting executable under terms of your choice, provided that
+ * you also meet, for each linked independent module, the terms and conditions of
+ * the license of that module.  An independent module is a module which is not
+ * derived from this software.  The special exception does not apply to any
+ * modifications of the software.
+ * 
+ *      Notwithstanding the above, under no circumstances may you combine this
+ * software in any way with any other Broadcom software provided under a license
+ * other than the GPL, without Broadcom's express prior written consent.
  *
  * $Id: hndrte_cons.h 277737 2011-08-16 17:54:59Z $
  */
@@ -11,16 +29,7 @@
 
 #include <typedefs.h>
 
-#if defined(RWL_DONGLE) || defined(UART_REFLECTOR)
-/* For Dongle uart tranport max cmd len is 256 bytes + header length (16 bytes)
- *  In case of ASD commands we are not sure about how much is the command size
- *  To be on the safe side, input buf len CBUF_LEN is increased to max (512) bytes.
- */
-#define RWL_MAX_DATA_LEN 	(512 + 8)	/* allow some extra bytes for '/n' termination */
-#define CBUF_LEN	(RWL_MAX_DATA_LEN + 64)  /* allow 64 bytes for header ("rwl...") */
-#else
 #define CBUF_LEN	(128)
-#endif /* RWL_DONGLE || UART_REFLECTOR */
 
 #define LOG_BUF_LEN	1024
 

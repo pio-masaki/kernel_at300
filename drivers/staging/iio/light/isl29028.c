@@ -29,7 +29,6 @@
 #include <linux/slab.h>
 #include <linux/completion.h>
 #include <linux/interrupt.h>
-#include <linux/regulator/consumer.h>
 #include "../iio.h"
 
 #define CONVERSION_TIME_MS		100
@@ -105,7 +104,6 @@ struct isl29028_chip {
 	struct iio_dev		*indio_dev;
 	struct i2c_client	*client;
 	struct mutex		lock;
-    struct regulator    *als_reg;
 	int			irq;
 
 	int			prox_period;
@@ -1154,6 +1152,11 @@ static irqreturn_t threshold_isr(int irq, void *irq_data)
 	return IRQ_HANDLED;
 }
 
+static const struct iio_info isl29028_info = {
+	.attrs = &isl29108_group,
+	.driver_module = THIS_MODULE,
+};
+
 static int __devinit isl29028_probe(struct i2c_client *client,
 	const struct i2c_device_id *id)
 {
@@ -1175,20 +1178,9 @@ static int __devinit isl29028_probe(struct i2c_client *client,
 
 	mutex_init(&chip->lock);
 
-    chip->als_reg = regulator_get(NULL, "vdd_3v3_als");
-    if (IS_ERR_OR_NULL(chip->als_reg)) {
-        dev_err(&client->dev, "Unable to get regulator vdd_3v3_als\n");
-        goto exit_free;
-    }
-    err = regulator_enable(chip->als_reg);
-    if (err < 0) {
-        dev_err(&client->dev, "couldn't enable regulator vdd_3v3_als\n");
-        goto exit_reg;
-    }
-
 	err = isl29028_chip_init(client);
 	if (err)
-		goto exit_reg;
+		goto exit_free;
 
 	init_completion(&chip->prox_completion);
 	init_completion(&chip->als_completion);
@@ -1204,16 +1196,15 @@ static int __devinit isl29028_probe(struct i2c_client *client,
 	}
 
 	chip->is_int_enable = true;
-	chip->indio_dev = iio_allocate_device();
+	chip->indio_dev = iio_allocate_device(0);
 	if (!chip->indio_dev) {
 		dev_err(&client->dev, "iio allocation fails\n");
 		goto exit_irq;
 	}
 
-	chip->indio_dev->attrs = &isl29108_group;
+	chip->indio_dev->info = &isl29028_info;
 	chip->indio_dev->dev.parent = &client->dev;
 	chip->indio_dev->dev_data = (void *)(chip);
-	chip->indio_dev->driver_module = THIS_MODULE;
 	chip->indio_dev->modes = INDIO_DIRECT_MODE;
 	err = iio_device_register(chip->indio_dev);
 	if (err) {
@@ -1228,9 +1219,6 @@ exit_iio_free:
 exit_irq:
 	if (chip->irq > 0)
 		free_irq(chip->irq, chip);
- exit_reg:
-    if (chip->als_reg)
-        regulator_put(chip->als_reg);
 exit_free:
 	kfree(chip);
 exit:
@@ -1245,12 +1233,6 @@ static int __devexit isl29028_remove(struct i2c_client *client)
 	iio_device_unregister(chip->indio_dev);
 	if (chip->irq > 0)
 		free_irq(chip->irq, chip);
-
-    if (chip->als_reg) {
-        regulator_disable(chip->als_reg);
-        regulator_put(chip->als_reg);
-    }
-
 	kfree(chip);
 	return 0;
 }

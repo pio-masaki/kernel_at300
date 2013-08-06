@@ -27,9 +27,9 @@
 #include <linux/gpio_keys.h>
 #include <linux/switch.h>
 #include <linux/mfd/tps6591x.h>
-#include <linux/interrupt_keys.h>
 #include <linux/gpio_scrollwheel.h>
 #include <linux/io.h>
+#include <linux/interrupt.h>
 
 #include <mach/irqs.h>
 #include <mach/io.h>
@@ -63,32 +63,18 @@ static int ast_wakeup_key(void)
 {
     unsigned long status = readl(IO_ADDRESS(TEGRA_PMC_BASE) + PMC_WAKE_STATUS);
   
-    if ((status & TEGRA_WAKE_GPIO_PV0) || (status & TEGRA_WAKE_GPIO_PV1)) {
+    if ((status & (1ul << TEGRA_WAKE_GPIO_PV0)) ||
+        (get_pending_wakeup_irq() == TEGRA_GPIO_TO_IRQ(TEGRA_GPIO_PV0))) { /* power key */
         return KEY_POWER;
     } else {
         return KEY_RESERVED;
     }
 }
 
-static const char* ast_wakeup_name(void)
-{
-    unsigned long status = readl(IO_ADDRESS(TEGRA_PMC_BASE) + PMC_WAKE_STATUS);
-
-    if (status & TEGRA_WAKE_GPIO_PV0) {
-	return "KEY_POWER";
-    } else if (status & TEGRA_WAKE_GPIO_PV1) {
-	return "ac_in";
-    } else if (status & TEGRA_WAKE_GPIO_PS4) {
-	return "nvdock";
-    }
-    return "None";
-}
-
 static struct gpio_keys_platform_data ast_gpio_keys_platform_data = {
 	.buttons	= ast_gpio_keys,
 	.nbuttons	= ARRAY_SIZE(ast_gpio_keys),
     .wakeup_key = ast_wakeup_key,
-    .wakeup_name = ast_wakeup_name,
 };
 
 static struct platform_device ast_gpio_keys_device = {
@@ -99,39 +85,11 @@ static struct platform_device ast_gpio_keys_device = {
 	},
 };
 
-/* #define INT_KEY(_id, _irq, _iswake, _deb_int)	\ */
-/* 	{					\ */
-/* 		.code = _id,			\ */
-/* 		.irq = _irq,			\ */
-/* 		.active_low = 1,		\ */
-/* 		.desc = #_id,			\ */
-/* 		.type = EV_KEY,			\ */
-/* 		.wakeup = _iswake,		\ */
-/* 		.debounce_interval = _deb_int,	\ */
-/* 	} */
-/* static struct interrupt_keys_button ast_int_keys[] = { */
-/* 	[0] = INT_KEY(KEY_POWER, TPS6591X_IRQ_BASE + TPS6591X_INT_PWRON, 0, 100), */
-/* }; */
 
-/* static struct interrupt_keys_platform_data ast_int_keys_pdata = { */
-/* 	.int_buttons	= ast_int_keys, */
-/* 	.nbuttons       = ARRAY_SIZE(ast_int_keys), */
-/* }; */
-
-/* static struct platform_device ast_int_keys_device = { */
-/* 	.name   = "interrupt-keys", */
-/* 	.id     = 0, */
-/* 	.dev    = { */
-/* 		.platform_data  = &ast_int_keys_pdata, */
-/* 	}, */
-/* }; */
-
-#define AST_MULTIFUNC_SWITCH         TEGRA_GPIO_PR5
-#define MULTI_FUNC_ACTIVE_LOW	     (1)
 static struct gpio_switch_platform_data ast_sw_platform_data = {
     .name           = "multi-func",
-    .gpio           = AST_MULTIFUNC_SWITCH,
-    .active_low     = MULTI_FUNC_ACTIVE_LOW,
+    .gpio           = MULTIFUNC_SWITCH_GPIO,
+    .active_low     = 1,
 };
 
 static struct platform_device ast_sw_device = {
@@ -153,7 +111,7 @@ int __init ast_keys_init(void)
 
     platform_device_register(&ast_gpio_keys_device);
 
-    tegra_gpio_enable(AST_MULTIFUNC_SWITCH);
+    tegra_gpio_enable(MULTIFUNC_SWITCH_GPIO);
     platform_device_register(&ast_sw_device);
 
 	return 0;

@@ -1,8 +1,26 @@
 /*
 * Customer code to add GPIO control during WLAN start/stop
-* $Copyright Open Broadcom Corporation$
+* Copyright (C) 1999-2011, Broadcom Corporation
+* 
+*         Unless you and Broadcom execute a separate written software license
+* agreement governing use of this software, this software is licensed to you
+* under the terms of the GNU General Public License version 2 (the "GPL"),
+* available at http://www.broadcom.com/licenses/GPLv2.php, with the
+* following added to such license:
+* 
+*      As a special exception, the copyright holders of this software give you
+* permission to link this software with independent modules, and to copy and
+* distribute the resulting executable under terms of your choice, provided that
+* you also meet, for each linked independent module, the terms and conditions of
+* the license of that module.  An independent module is a module which is not
+* derived from this software.  The special exception does not apply to any
+* modifications of the software.
+* 
+*      Notwithstanding the above, under no circumstances may you combine this
+* software in any way with any other Broadcom software provided under a license
+* other than the GPL, without Broadcom's express prior written consent.
 *
-* $Id: dhd_custom_gpio.c 280266 2011-08-28 04:18:20Z $
+* $Id: dhd_custom_gpio.c 339054 2012-06-15 04:56:55Z $
 */
 
 #include <typedefs.h>
@@ -76,16 +94,16 @@ int dhd_customer_oob_irq_map(unsigned long *irq_flags_ptr)
 	if (dhd_oob_gpio_num < 0) {
 		dhd_oob_gpio_num = CUSTOM_OOB_GPIO_NUM;
 	}
-#endif /* CUSTOMER_HW2 */
+#endif /* CUSTOM_OOB_GPIO_NUM */
 
 	if (dhd_oob_gpio_num < 0) {
-		WL_ERROR(("%s: ERROR customer specific Host GPIO is NOT defined \n",
+		WL_ERROR(("%s: ERROR customer specific Host GPIO is NOT defined\n",
 			__FUNCTION__));
 		return (dhd_oob_gpio_num);
 	}
 
 	WL_ERROR(("%s: customer specific Host GPIO number is (%d)\n",
-	         __FUNCTION__, dhd_oob_gpio_num));
+		__FUNCTION__, dhd_oob_gpio_num));
 
 #if defined CUSTOMER_HW
 	host_oob_irq = MSM_GPIO_TO_INT(dhd_oob_gpio_num);
@@ -233,7 +251,6 @@ const struct cntry_locales_custom translate_custom_table[] = {
 */
 void get_customized_country_code(char *country_iso_code, wl_country_t *cspec)
 {
-#if defined(OEM_ANDROID)
 #if defined(CUSTOMER_HW2) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 39))
 
 	struct cntry_locales_custom *cloc_ptr;
@@ -273,5 +290,4 @@ void get_customized_country_code(char *country_iso_code, wl_country_t *cspec)
 #endif /* EXMAPLE_TABLE */
 	return;
 #endif /* defined(CUSTOMER_HW2) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 36)) */
-#endif /* OEM_ANDROID */
 }

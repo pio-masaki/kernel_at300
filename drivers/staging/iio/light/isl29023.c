@@ -553,7 +553,7 @@ static struct attribute *isl29023_attributes[] = {
 	NULL
 };
 
-static const struct attribute_group isl29108_group = {
+static const struct attribute_group isl29023_group = {
 	.attrs = isl29023_attributes,
 };
 
@@ -625,17 +625,22 @@ static int isl29023_chip_init(struct i2c_client *client)
 	return 0;
 }
 
+static const struct iio_info isl29023_info = {
+	.attrs = &isl29023_group,
+	.driver_module = THIS_MODULE,
+};
+
 static int __devinit isl29023_probe(struct i2c_client *client,
 	const struct i2c_device_id *id)
 {
 	struct isl29023_chip *chip;
 	int err;
-        int lux_value = 0;
+    int lux_value = 0;
 	int lux_value2 = 0;
-        int ir_value = 0;
+    int ir_value = 0;
 	bool lux_status,ir_status;
 
-          printk(KERN_INFO "[light] isl29023 probe!\n");
+    printk(KERN_INFO "[light] isl29023 probe!\n");
 	chip = kzalloc(sizeof (struct isl29023_chip), GFP_KERNEL);
 	if (!chip) {
 		dev_err(&client->dev, "Memory allocation fails\n");
@@ -657,16 +662,15 @@ static int __devinit isl29023_probe(struct i2c_client *client,
 	if (err)
 		goto exit_free;
 
-	chip->indio_dev = iio_allocate_device();
+	chip->indio_dev = iio_allocate_device(0);
 	if (!chip->indio_dev) {
 		dev_err(&client->dev, "iio allocation fails\n");
 		goto exit_free;
 	}
 
-	chip->indio_dev->attrs = &isl29108_group;
+	chip->indio_dev->info = &isl29023_info;
 	chip->indio_dev->dev.parent = &client->dev;
 	chip->indio_dev->dev_data = (void *)(chip);
-	chip->indio_dev->driver_module = THIS_MODULE;
 	chip->indio_dev->modes = INDIO_DIRECT_MODE;
 	err = iio_device_register(chip->indio_dev);
 	if (err) {
@@ -674,11 +678,11 @@ static int __devinit isl29023_probe(struct i2c_client *client,
 		goto exit_iio_free;
 	}
 
-        lux_status = isl29023_read_lux(chip->client, &lux_value, &lux_value2);
-        printk(KERN_INFO "[light] isl29023 lux_status=%d,lux_value =%d!\n",lux_status,lux_value);
+    lux_status = isl29023_read_lux(chip->client, &lux_value, &lux_value2);
+    printk(KERN_INFO "[light] isl29023 lux_status=%d,lux_value =%d!\n",lux_status,lux_value);
 
-        ir_status = isl29023_read_ir(chip->client, &ir_value);
-        printk(KERN_INFO "[light] isl29023 ir_status=%d,ir_value =%d!\n",ir_status,ir_value);
+    ir_status = isl29023_read_ir(chip->client, &ir_value);
+    printk(KERN_INFO "[light] isl29023 ir_status=%d,ir_value =%d!\n",ir_status,ir_value);
 
 	chip->early_suspend.suspend = isl29023_early_suspend;
 	chip->early_suspend.resume = isl29023_early_resume;
@@ -686,16 +690,17 @@ static int __devinit isl29023_probe(struct i2c_client *client,
 
 	if (chip->pdata && chip->pdata->power_off)
 		chip->pdata->power_off();
+
 	return 0;
 
 exit_iio_free:
-        printk(KERN_INFO "[light] isl29023 iio error!\n");
+    printk(KERN_INFO "[light] isl29023 iio error!\n");
 	iio_free_device(chip->indio_dev);
 exit_free:
-        printk(KERN_INFO "[light] isl29023 exit free!\n");
+    printk(KERN_INFO "[light] isl29023 exit free!\n");
 	kfree(chip);
 exit:
-        printk(KERN_INFO "[light] isl29023 exit!\n");
+    printk(KERN_INFO "[light] isl29023 exit!\n");
 	return err;
 }
 

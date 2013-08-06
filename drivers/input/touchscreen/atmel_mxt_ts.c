@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2010 Samsung Electronics Co.Ltd
  * Copyright (C) 2011 Atmel Corporation
- * Copyright (C) 2011 NVIDIA Corporation
+ * Copyright (C) 2011-2012 NVIDIA Corporation
  * Author: Joonyoung Shim <jy0922.shim@samsung.com>
  *
  * This program is free software; you can redistribute  it and/or modify it
@@ -93,6 +93,7 @@
 #define MXT_SPT_DIGITIZER_T43			43
 #define MXT_SPT_MESSAGECOUNT_T44		44
 #define MXT_SPT_CTECONFIG_T46			46
+#define MXT_PROCG_NOISESUPPRESSION_T62	62
 
 /* MXT_DEBUG_DIAGNOSTIC_T37 field */
 #define MXT_ADR_T37_MODE	0x00
@@ -382,7 +383,7 @@ struct mxt_data {
 	dev_t dev_num;
 	struct class *mxt_class;
 	u16 address_pointer;
-	
+
 	/* for sphinx */
 	struct delayed_work dwork;
 
@@ -425,6 +426,7 @@ static bool mxt_object_readable(unsigned int type)
 	case MXT_SPT_USERDATA_T38:
 	case MXT_SPT_DIGITIZER_T43:
 	case MXT_SPT_CTECONFIG_T46:
+	case MXT_PROCG_NOISESUPPRESSION_T62:
 		return true;
 	default:
 		return false;
@@ -461,6 +463,7 @@ static bool mxt_object_writable(unsigned int type)
 	case MXT_SPT_CTECONFIG_T28:
 	case MXT_SPT_DIGITIZER_T43:
 	case MXT_SPT_CTECONFIG_T46:
+	case MXT_PROCG_NOISESUPPRESSION_T62:
 		return true;
 	default:
 		return false;
@@ -1045,7 +1048,7 @@ ssize_t mxt_memory_write(struct file *file, const char __user *buf, size_t count
 	//mxt_debug(DEBUG_TRACE, "mxt_memory_write entered\n");
 	whole_blocks = count / I2C_PAYLOAD_SIZE;
 	last_block_size = count % I2C_PAYLOAD_SIZE;
-	
+
 	disable_irq(mxt->client->irq);
 	mutex_lock(&mxt->access_mutex);
 
@@ -1150,11 +1153,12 @@ static void mxt_input_report(struct mxt_data *data, int single_id)
 					finger[id].x);
 			input_report_abs(input_dev, ABS_MT_POSITION_Y,
 					finger[id].y);
+			input_report_abs(input_dev, ABS_MT_TRACKING_ID, id);
 			input_mt_sync(input_dev);
 		}
-		
 
-		if (finger[id].status == MXT_RELEASE) 
+
+		if (finger[id].status == MXT_RELEASE)
 			finger[id].status = 0;
 		else
 			finger_num++;
@@ -1228,18 +1232,18 @@ static void mxt_worker(struct work_struct *work)
 	struct mxt_finger *finger;
 	int id;
 	u8 reportid;
-	
+
 	data = container_of(work, struct mxt_data, dwork.work);
 	dev = &data->client->dev;
 	finger = data->finger;
 	disable_irq(data->client->irq);
-	
+
 	selftest_object = mxt_get_object(data, MXT_SPT_SELFTEST_T25);
 	touch_object = mxt_get_object(data, MXT_TOUCH_MULTI_T9);
 	touch_suppress_object = mxt_get_object(data, MXT_PROCI_TOUCHSUPPRESSION_T42);
 	if (!touch_object || !selftest_object || !touch_suppress_object)
 		goto end;
-	
+
 	do {
 		if (mxt_read_message(data, &message)) {
 			dev_err(dev, "Failed to read message\n");
@@ -1275,11 +1279,11 @@ static void mxt_worker(struct work_struct *work)
 						finger[id].status = MXT_RELEASE;
 				}
 				mxt_input_report(data, id);
-			}			
+			}
 		} else if (reportid != MXT_RPTID_NOMSG)
 			mxt_dump_message(dev, &message);
 	} while (reportid != MXT_RPTID_NOMSG);
-	
+
 	enable_irq(data->client->irq);
 	/* Make sure we don't miss any interrupts and read changeline. */
 	if (data->read_chg() == 0)
@@ -1734,10 +1738,6 @@ static int mxt_initialize(struct mxt_data *data)
 	struct mxt_info *info = &data->info;
 	int error;
 
-	error = mxt_get_info(data);
-	if (error)
-		return error;
-
 	data->object_table = kcalloc(info->object_num,
 				     sizeof(struct mxt_object),
 				     GFP_KERNEL);
@@ -1801,12 +1801,12 @@ static ssize_t mxt_id_information_show(struct device *dev,
 	struct mxt_data *data = dev_get_drvdata(dev);
 	struct mxt_info *info = &data->info;
 	int count = 0;
-	
+
 	count += sprintf(buf + count, "Family ID  : 0x%02X\n", info->family_id);
 	count += sprintf(buf + count, "Variant ID : 0x%02X\n", info->variant_id);
 	count += sprintf(buf + count, "Version    : 0x%02X -> %d.%d\n", info->version, info->version / 16, info->version % 16);
 	count += sprintf(buf + count, "Build      : 0x%02X\n", info->build);
-	
+
 	return count;
 }
 
@@ -2500,7 +2500,7 @@ static void mxt_stop(struct mxt_data *data)
 	//int id;
 	struct device *dev = &data->client->dev;
 	//struct mxt_finger *finger = data->finger;
-	
+
 	//dev_info(dev, "mxt_stop:  is_stopped = %d\n", data->is_stopped);
 	if (data->is_stopped)
 		return;
@@ -2508,7 +2508,7 @@ static void mxt_stop(struct mxt_data *data)
 #if 0
 		/* Touch disable */
 		error = mxt_write_object(data, MXT_TOUCH_MULTI_T9, MXT_TOUCH_CTRL, MXT_TOUCH_DISABLE);
-#else	
+#else
 	if (machine_is_sphinx()) {
 		cancel_delayed_work_sync(&data->dwork);
 	} else {
@@ -2524,12 +2524,12 @@ static void mxt_stop(struct mxt_data *data)
 
 	if (error)
 		dev_info(dev, "MXT disable touch fail.\n");
-	
+
 	/*error = mxt_make_highchg(data);
 	if (error) {
 		dev_err(&data->client->dev, "Failed to make high CHG\n");
 	}
-	
+
 	for (id = 0; id < MXT_MAX_FINGER; id++) {
 		if (finger[id].status & (MXT_MOVE | MXT_PRESS))
 			finger[id].status = MXT_RELEASE;
@@ -2563,6 +2563,7 @@ static int __devinit mxt_probe(struct i2c_client *client,
 	struct input_dev *input_dev;
 	int error, i = 0;
 	u8 val_u8 = 0;
+	int data_num;
 
 	if (!pdata)
 		return -EINVAL;
@@ -2587,6 +2588,24 @@ static int __devinit mxt_probe(struct i2c_client *client,
 	data->irq = client->irq;
 	data->is_stopped = 0;
 
+	i2c_set_clientdata(client, data);
+	mutex_init(&data->access_mutex);
+
+	error = mxt_get_info(data);
+	if (error)
+		goto err_free_mem;
+
+	data_num = data->pdata->data_num;
+
+	for (i = 0; i < data_num; i++) {
+		if (data->pdata->config_fw_ver == data->info.version)
+			break;
+		else if (i == data_num - 1)
+			break;
+		else
+			data->pdata++;
+	}
+
 	mxt_calc_resolution(data);
 
 	__set_bit(EV_ABS, input_dev->evbit);
@@ -2606,11 +2625,9 @@ static int __devinit mxt_probe(struct i2c_client *client,
 			     0, data->max_x, 0, 0);
 	input_set_abs_params(input_dev, ABS_MT_POSITION_Y,
 			     0, data->max_y, 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_TRACKING_ID, 0, MXT_MAX_FINGER, 0, 0);
 
 	input_set_drvdata(input_dev, data);
-	i2c_set_clientdata(client, data);
-
-	mutex_init(&data->access_mutex);
 
 	error = device_create_file(&client->dev, &dev_attr_update_fw);
 	if (error)
@@ -2621,16 +2638,16 @@ static int __devinit mxt_probe(struct i2c_client *client,
 		if (client->addr >= MXT_APP_LOW)
 			client->addr -= 0x26;
 		printk(KERN_INFO "[Touch] client->addr: 0x%X ---> %s (%d)\n",client->addr , __FUNCTION__, __LINE__);
-		
+
 		error = mxt_check_bootloader(client, MXT_WAITING_BOOTLOAD_CMD);
 		if (error)
 			goto err_free_object;
-		
+
 		bootloader_mode = 1;
 		client->addr += 0x26;
 		return 0;
 	}
-		
+
 	if (machine_is_sphinx()) {
 		INIT_DELAYED_WORK(&data->dwork, mxt_worker);
 	}
@@ -2708,7 +2725,7 @@ static int __devinit mxt_probe(struct i2c_client *client,
 
 	sysfs_bin_attr_init(&data->mem_access_attr);
 	data->mem_access_attr.attr.name = "mem_access";
-	data->mem_access_attr.attr.mode = S_IRUGO | S_IWUSR;
+	data->mem_access_attr.attr.mode = S_IRUGO | S_IWUSR | S_IWGRP;
 	data->mem_access_attr.read = mxt_mem_access_read;
 	data->mem_access_attr.write = mxt_mem_access_write;
 	data->mem_access_attr.size = 65535;
@@ -2758,7 +2775,7 @@ static int __devinit mxt_probe(struct i2c_client *client,
 
 		device_create(data->mxt_class, NULL, MKDEV(MAJOR(data->dev_num), 0), NULL,
 			      "maXTouch");
-		
+
 		/* Schedule a worker routine to read any messages that might have
 		 * been sent before interrupts were enabled. */
 		cancel_delayed_work(&data->dwork);
@@ -2787,7 +2804,7 @@ static int __devexit mxt_remove(struct i2c_client *client)
 	/* Remove debug dir entries */
 	debugfs_remove_recursive(data->debug_dir);
 	debugfs_remove(data->debug_dir);
-	
+
 	if (machine_is_sphinx()) {
 		unregister_chrdev_region(data->dev_num, 1);
 		device_destroy(data->mxt_class, MKDEV(MAJOR(data->dev_num), 0));
@@ -2861,7 +2878,7 @@ static void mxt_early_suspend(struct early_suspend *es)
 	mxt = container_of(es, struct mxt_data, early_suspend);
 	dev = &mxt->client->dev;
 	//dev_info(dev, "MXT Early Suspend entered\n");
-	
+
 	if (machine_is_sphinx())
 		disable_irq(mxt->irq);
 
@@ -2881,7 +2898,7 @@ static void mxt_early_resume(struct early_suspend *es)
 	if (mxt_resume(&mxt->client->dev) != 0)
 		dev_err(dev, "%s: failed\n", __func__);
 	//dev_info(dev, "MXT Early Resumed\n");
-	
+
 	if (machine_is_sphinx())
 		enable_irq(mxt->irq);
 }

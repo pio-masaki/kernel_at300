@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-ast-panel.c
  *
- * Copyright (c) 2010-2011, NVIDIA Corporation.
+ * Copyright (c) 2010-2012, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,42 +19,37 @@
  */
 
 #include <linux/delay.h>
-#include <linux/jiffies.h>
-#include <linux/mutex.h>
+#include <linux/ion.h>
+#include <linux/tegra_ion.h>
 #include <linux/gpio.h>
 #include <linux/regulator/consumer.h>
 #include <linux/resource.h>
+#include <asm/mach-types.h>
 #include <linux/platform_device.h>
 #include <linux/earlysuspend.h>
 #include <linux/pwm_backlight.h>
 #include <linux/charging-img.h>
-#include <linux/nvhost.h>
 #include <asm/atomic.h>
-#include <asm/mach-types.h>
-#include <mach/nvmap.h>
+#include <linux/nvhost.h>
+#include <linux/nvmap.h>
 #include <mach/irqs.h>
 #include <mach/iomap.h>
 #include <mach/dc.h>
 #include <mach/fb.h>
+#include <mach/smmu.h>
 
 #include "board.h"
 #include "board-ast.h"
 #include "devices.h"
 #include "gpio-names.h"
+#include "tegra3_host1x_devices.h"
 
 #define BRIGHTNESS_MAX 255
 #define LCD_ON_OFF_TIME_MIN 500
 
-#define AST_LVDS_SHUTDOWN    TEGRA_GPIO_PN6
-#define AST_BL_ENB           TEGRA_GPIO_PH2
-#define AST_BL_PWM           TEGRA_GPIO_PH0
-#define AST_HDMI_HPD         TEGRA_GPIO_PN7
-#define AST_HDMI_ENB         TEGRA_GPIO_PH5
-
 static struct mutex lcd_lock;
 static unsigned int lcd_off_timestamp;
 
-static struct regulator *ast_lvds_vdd = NULL;
 static struct regulator *ast_lvds_vdd_bl = NULL;
 static struct regulator *ast_lvds_vdd_panel = NULL;
 
@@ -127,11 +122,11 @@ static p_tegra_dc_bl_output bl_output;
 
 static int ast_panel_power_on(void)
 {
-	if (gpio_get_value(AST_LVDS_SHUTDOWN) == 1 ||
+	if (gpio_get_value(LVDS_SHUTDOWN_GPIO) == 1 ||
 		mutex_lock_interruptible(&lcd_lock))
 		return 0;
 
-	if (ast_lvds_vdd && ast_lvds_vdd_panel && ast_lvds_vdd_bl) {
+	if (ast_lvds_vdd_panel && ast_lvds_vdd_bl) {
 		unsigned int lcd_on_off_time =
 			jiffies_to_msecs(jiffies) - lcd_off_timestamp;
 
@@ -139,13 +134,12 @@ static int ast_panel_power_on(void)
 			lcd_on_off_time > 0)
 			msleep(LCD_ON_OFF_TIME_MIN - lcd_on_off_time);
 
-		regulator_enable(ast_lvds_vdd);
 		regulator_enable(ast_lvds_vdd_panel);
 		regulator_enable(ast_lvds_vdd_bl);
 		msleep(1);
 	}
 
-	gpio_set_value(AST_LVDS_SHUTDOWN, 1);
+	gpio_set_value(LVDS_SHUTDOWN_GPIO, 1);
 	mutex_unlock(&lcd_lock);
 
 	return 0;
@@ -153,16 +147,15 @@ static int ast_panel_power_on(void)
 
 static int ast_panel_power_off(void)
 {
-	if (gpio_get_value(AST_LVDS_SHUTDOWN) == 0 ||
+	if (gpio_get_value(LVDS_SHUTDOWN_GPIO) == 0 ||
 		mutex_lock_interruptible(&lcd_lock))
 		return 0;
 
-	gpio_set_value(AST_LVDS_SHUTDOWN, 0);
-	if (ast_lvds_vdd && ast_lvds_vdd_panel && ast_lvds_vdd_bl) {
+	gpio_set_value(LVDS_SHUTDOWN_GPIO, 0);
+	if (ast_lvds_vdd_panel && ast_lvds_vdd_bl) {
 		msleep(1);
 		regulator_disable(ast_lvds_vdd_bl);
 		regulator_disable(ast_lvds_vdd_panel);
-		regulator_disable(ast_lvds_vdd);
 		lcd_off_timestamp = jiffies_to_msecs(jiffies);
 	}
 
@@ -173,18 +166,6 @@ static int ast_panel_power_off(void)
 
 static int ast_panel_enable(void)
 {
-	if (!ast_lvds_vdd) {
-		ast_lvds_vdd = regulator_get(NULL, "vdd_lvds");
-		if (WARN_ON(IS_ERR(ast_lvds_vdd))) {
-			pr_err("%s: couldn't get regulator vdd_lvds: %ld\n",
-			       __func__, PTR_ERR(ast_lvds_vdd));
-			ast_lvds_vdd = NULL;
-			return -ENODEV;
-		}
-
-		regulator_enable(ast_lvds_vdd);
-	}
-
 	if (!ast_lvds_vdd_panel) {
 		ast_lvds_vdd_panel = regulator_get(NULL, "vdd_lcd_panel");
 		if (WARN_ON(IS_ERR(ast_lvds_vdd_panel))) {
@@ -219,20 +200,20 @@ static int ast_backlight_init(struct device *dev) {
 	if (WARN_ON(ARRAY_SIZE(ast_bl_output_measured) != BRIGHTNESS_MAX + 1))
 		pr_err("bl_output array does not have 256 elements\n");
 
-	tegra_gpio_disable(AST_BL_PWM);
-	err = gpio_request(AST_BL_ENB, "backlight_enb");
+	tegra_gpio_disable(BL_PWM_GPIO);
+	err = gpio_request(BL_ENB_GPIO, "backlight_enb");
 	if (err < 0)
 		return err;
 
-	gpio_direction_output(AST_BL_ENB, 1);
-	tegra_gpio_enable(AST_BL_ENB);
+	gpio_direction_output(BL_ENB_GPIO, 1);
+	tegra_gpio_enable(BL_ENB_GPIO);
 
 	return err;
 };
 
 static void ast_backlight_enable(int enable)
 {
-	if (gpio_get_value(AST_BL_ENB) == enable)
+	if (gpio_get_value(BL_ENB_GPIO) == enable)
 		return;
 
 	if (enable)
@@ -244,7 +225,7 @@ static void ast_backlight_enable(int enable)
 	if (enable)
 		msleep(200);
 
-	gpio_set_value(AST_BL_ENB, enable);
+	gpio_set_value(BL_ENB_GPIO, enable);
 	if (!enable)
 		msleep(200);
 
@@ -271,8 +252,8 @@ static int ast_backlight_notify(struct device *unused, int brightness)
 
 static void ast_backlight_exit(struct device *dev) {
 	ast_backlight_enable(0);
-	gpio_free(AST_BL_ENB);
-	tegra_gpio_disable(AST_BL_ENB);
+	gpio_free(BL_ENB_GPIO);
+	tegra_gpio_disable(BL_ENB_GPIO);
 }
 
 static int ast_disp1_check_fb(struct device *dev, struct fb_info *info);
@@ -438,7 +419,8 @@ static struct resource ast_disp2_resources[] = {
 static struct tegra_dc_mode avalon_panel_modes[] = {
 	{
 		/* 1280x800@60Hz */
-		.pclk = 102000000,
+		/* .pclk = 102000000, */
+		.pclk = 74181818,
 		.h_ref_to_sync = 0,
 		.v_ref_to_sync = 1,
 		.h_sync_width = 48,
@@ -648,8 +630,9 @@ static int ast_disp1_check_fb(struct device *dev, struct fb_info *info)
 static struct tegra_dc_out ast_disp2_out = {
 	.type = TEGRA_DC_OUT_HDMI,
 	.flags = TEGRA_DC_OUT_HOTPLUG_HIGH,
+	.parent_clk = "pll_d2_out0",
 	.dcc_bus = 3,
-	.hotplug_gpio = AST_HDMI_HPD,
+	.hotplug_gpio = HDMI_HPD_GPIO,
 	.max_pixclock = KHZ2PICOS(148500),
 	.align = TEGRA_DC_ALIGN_MSB,
 	.order = TEGRA_DC_ORDER_RED_BLUE,
@@ -681,6 +664,7 @@ static struct nvhost_device ast_disp2_device = {
 	},
 };
 
+#if defined(CONFIG_TEGRA_NVMAP)
 static struct nvmap_platform_carveout ast_carveouts[] = {
 	[0] = NVMAP_HEAP_CARVEOUT_IRAM_INIT,
 	[1] = {
@@ -704,10 +688,65 @@ static struct platform_device ast_nvmap_device = {
 		.platform_data = &ast_nvmap_data,
 	},
 };
+#endif
 
-#define AC_IN_GPIO         TEGRA_GPIO_PV1
+#if defined(CONFIG_ION_TEGRA)
+
+static struct platform_device tegra_iommu_device = {
+	.name = "tegra_iommu_device",
+	.id = -1,
+	.dev = {
+		.platform_data = (void *)((1 << HWGRP_COUNT) - 1),
+	},
+};
+
+static struct ion_platform_data tegra_ion_data = {
+	.nr = 4,
+	.heaps = {
+		{
+			.type = ION_HEAP_TYPE_CARVEOUT,
+			.id = TEGRA_ION_HEAP_CARVEOUT,
+			.name = "carveout",
+			.base = 0,
+			.size = 0,
+		},
+		{
+			.type = ION_HEAP_TYPE_CARVEOUT,
+			.id = TEGRA_ION_HEAP_IRAM,
+			.name = "iram",
+			.base = TEGRA_IRAM_BASE + TEGRA_RESET_HANDLER_SIZE,
+			.size = TEGRA_IRAM_SIZE - TEGRA_RESET_HANDLER_SIZE,
+		},
+		{
+			.type = ION_HEAP_TYPE_CARVEOUT,
+			.id = TEGRA_ION_HEAP_VPR,
+			.name = "vpr",
+			.base = 0,
+			.size = 0,
+		},
+		{
+			.type = ION_HEAP_TYPE_IOMMU,
+			.id = TEGRA_ION_HEAP_IOMMU,
+			.name = "iommu",
+			.base = TEGRA_SMMU_BASE,
+			.size = TEGRA_SMMU_SIZE,
+			.priv = &tegra_iommu_device.dev,
+		},
+	},
+};
+
+static struct platform_device tegra_ion_device = {
+	.name = "ion-tegra",
+	.id = -1,
+	.dev = {
+		.platform_data = &tegra_ion_data,
+	},
+};
+#endif
+
 static struct charging_img_data charging_data = {
-    .ac_in_pin = AC_IN_GPIO,
+    .ac_in_pin = AP_ACOK_GPIO,
+    .bl_pdev = &ast_backlight_device,
 };
 
 static struct platform_device charging_img_device = {
@@ -719,15 +758,20 @@ static struct platform_device charging_img_device = {
 };
 
 static struct platform_device *ast_gfx_devices[] __initdata = {
+#if defined(CONFIG_TEGRA_NVMAP)
 	&ast_nvmap_device,
-	&tegra_grhost_device,
+#endif
+#if defined(CONFIG_ION_TEGRA)
+	&tegra_ion_device,
+#endif
 	&tegra_pwfm0_device,
 	&ast_backlight_device,
 	&charging_img_device,
 };
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
-/* put early_suspend/late_resume handlers here for the display in order
+/*
+ * put early_suspend/late_resume handlers here for the display in order
  * to keep the code out of the display driver, keeping it closer to upstream
  */
 struct early_suspend ast_panel_early_suspender;
@@ -741,16 +785,26 @@ static void ast_panel_early_suspend(struct early_suspend *h)
 
 	if (num_registered_fb > 1)
 		fb_blank(registered_fb[1], FB_BLANK_NORMAL);
-	tegra_gpio_disable(AST_HDMI_HPD);
+	//tegra_gpio_disable(HDMI_HPD_GPIO);
+
+#ifdef CONFIG_TEGRA_CONVSERVATIVE_GOV_ON_EARLYSUPSEND
+       cpufreq_store_default_gov();
+       cpufreq_change_gov(cpufreq_conservative_gov);
+#endif
 }
 
 static void ast_panel_late_resume(struct early_suspend *h)
 {
 	unsigned i;
 
+#ifdef CONFIG_TEGRA_CONVSERVATIVE_GOV_ON_EARLYSUPSEND
+       cpufreq_restore_default_gov();
+#endif
+
 	for (i = 0; i < num_registered_fb; i++)
 		fb_blank(registered_fb[i], FB_BLANK_UNBLANK);
-	tegra_gpio_enable(AST_HDMI_HPD);
+
+	tegra_gpio_enable(HDMI_HPD_GPIO);
 }
 #endif
 
@@ -761,24 +815,25 @@ static int avalon_panel_init(void)
 
 	mutex_init(&lcd_lock);
 
+#if defined(CONFIG_TEGRA_NVMAP)
 	ast_carveouts[1].base = tegra_carveout_start;
 	ast_carveouts[1].size = tegra_carveout_size;
+#endif
 
-	err = gpio_request(AST_LVDS_SHUTDOWN, "lvds_shutdown");
+#if defined(CONFIG_ION_TEGRA)
+	tegra_ion_data.heaps[0].base = tegra_carveout_start;
+	tegra_ion_data.heaps[0].size = tegra_carveout_size;
+#endif
+
+	err = gpio_request(LVDS_SHUTDOWN_GPIO, "lvds_shutdown");
 	if (err < 0)
 		return err;
 
-	gpio_direction_output(AST_LVDS_SHUTDOWN, 1);
-	tegra_gpio_enable(AST_LVDS_SHUTDOWN);
-
-	/* hdmi software enable pin */
-/*        tegra_gpio_enable(AST_HDMI_ENB);*/
-/*        gpio_request(AST_HDMI_ENB, "ast_hdmi_enb");*/
-/*        gpio_direction_output(AST_HDMI_ENB, 1);*/
-
-	gpio_request(AST_HDMI_HPD, "hdmi_hpd");
-	gpio_direction_input(AST_HDMI_HPD);
-	tegra_gpio_enable(AST_HDMI_HPD);
+	gpio_direction_output(LVDS_SHUTDOWN_GPIO, 1);
+	tegra_gpio_enable(LVDS_SHUTDOWN_GPIO);
+	gpio_request(HDMI_HPD_GPIO, "hdmi_hpd");
+	gpio_direction_input(HDMI_HPD_GPIO);
+	tegra_gpio_enable(HDMI_HPD_GPIO);
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	ast_panel_early_suspender.suspend = ast_panel_early_suspend;
@@ -787,17 +842,27 @@ static int avalon_panel_init(void)
 	register_early_suspend(&ast_panel_early_suspender);
 #endif
 
+#ifdef CONFIG_TEGRA_GRHOST
+	err = tegra3_register_host1x_devices();
+	if (err)
+		return err;
+#endif
+
 	err = platform_add_devices(ast_gfx_devices,
 				ARRAY_SIZE(ast_gfx_devices));
+
+#if defined(CONFIG_TEGRA_GRHOST) && defined(CONFIG_TEGRA_DC)
 	res = nvhost_get_resource_byname(&ast_disp1_device,
 					 IORESOURCE_MEM, "fbmem");
 	res->start = tegra_fb_start;
 	res->end = tegra_fb_start + tegra_fb_size - 1;
+#endif
 
 	/* Copy the bootloader fb to the fb. */
 	tegra_move_framebuffer(tegra_fb_start, tegra_bootloader_fb_start,
-				min(tegra_fb_size, tegra_bootloader_fb_size));
+			       min(tegra_fb_size, tegra_bootloader_fb_size));
 
+#if defined(CONFIG_TEGRA_GRHOST) && defined(CONFIG_TEGRA_DC)
 	if (!err)
 		err = nvhost_device_register(&ast_disp1_device);
 
@@ -805,10 +870,15 @@ static int avalon_panel_init(void)
 					 IORESOURCE_MEM, "fbmem");
 	res->start = tegra_fb2_start;
 	res->end = tegra_fb2_start + tegra_fb2_size - 1;
+
+	/* Copy the bootloader fb to the fb2. */
+	tegra_move_framebuffer(tegra_fb2_start, tegra_bootloader_fb_start,
+			       min(tegra_fb2_size, tegra_bootloader_fb_size));
 	if (!err)
 		err = nvhost_device_register(&ast_disp2_device);
+#endif
 
-#if defined(CONFIG_TEGRA_NVAVP)
+#if defined(CONFIG_TEGRA_GRHOST) && defined(CONFIG_TEGRA_NVAVP)
 	if (!err)
 		err = nvhost_device_register(&nvavp_device);
 #endif

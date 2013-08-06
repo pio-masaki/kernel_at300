@@ -59,18 +59,14 @@ static int bcm4329_bt_rfkill_set_power(void *data, bool blocked)
 			gpio_direction_output(bcm4329_rfkill->gpio_reset, 0);
 		if (bcm4329_rfkill->bt_32k_clk)
 			clk_disable(bcm4329_rfkill->bt_32k_clk);
-		if (bcm4329_rfkill_enable_power->enable_wireless_regulator_control(0,BT_POWER) == -1)
-			printk(KERN_ERR "%s(): disable regulator failed!\n", __func__);
 	} else {
 		/* power on*/
-		if (bcm4329_rfkill_enable_power->enable_wireless_regulator_control(1,BT_POWER) == -1)
-			printk(KERN_ERR "%s(): enable regulator failed!\n", __func__);
 		if (bcm4329_rfkill->bt_32k_clk)
 			clk_enable(bcm4329_rfkill->bt_32k_clk);
 		if (bcm4329_rfkill->gpio_shutdown)
 		{
 			gpio_direction_output(bcm4329_rfkill->gpio_shutdown, 0);
-			msleep(100);
+			//msleep(100);
 			gpio_direction_output(bcm4329_rfkill->gpio_shutdown, 1);
 			msleep(100);
 			printk(KERN_ERR "%s set shutdown 0-->1 \n",__func__);
@@ -78,12 +74,13 @@ static int bcm4329_bt_rfkill_set_power(void *data, bool blocked)
 		if (bcm4329_rfkill->gpio_reset)
 		{
 			gpio_direction_output(bcm4329_rfkill->gpio_reset, 0);
-			msleep(100);
+			//msleep(100);
 			gpio_direction_output(bcm4329_rfkill->gpio_reset, 1);
 			msleep(100);
 			printk(KERN_ERR "%s set gpio_reset 0-->1 \n",__func__);
 		}
 	}
+
 	return 0;
 }
 

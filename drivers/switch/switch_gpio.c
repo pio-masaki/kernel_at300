@@ -37,14 +37,13 @@ struct gpio_switch_data {
 	const char *state_off;
 	int irq;
 	struct work_struct work;
-	/* default active low */
-	int state_locked;
-	int state_unlocked;
+    int active_low;
 };
 
 static BLOCKING_NOTIFIER_HEAD(switch_gpio_notifier);
 static BLOCKING_NOTIFIER_HEAD(switch_gpio_lock_hardware_notifier);
 static bool lock_hardware = false;
+static struct gpio_switch_data *spdata = NULL;
 
 int switch_gpio_notifier_register(struct notifier_block *nb)
 {
@@ -70,25 +69,30 @@ int switch_gpio_lock_hardware_notifier_unregister(struct notifier_block *nb)
 }
 EXPORT_SYMBOL(switch_gpio_lock_hardware_notifier_unregister);
 
+int switch_gpio_is_locked(void)
+{
+	int state = 0;
+
+	if (spdata == NULL)
+		return -1;
+	
+	state =  !!gpio_get_value(spdata->gpio) ^ spdata->active_low;
+	return lock_hardware ? state : SWITCH_UNLOCKED;
+}
+EXPORT_SYMBOL(switch_gpio_is_locked);
+
 static void gpio_switch_work(struct work_struct *work)
 {
 	int state;
-	int report_value = -1;
 	struct gpio_switch_data	*data =
 		container_of(work, struct gpio_switch_data, work);
 
-	state = gpio_get_value(data->gpio);
+	state = !!gpio_get_value(data->gpio) ^ data->active_low;
 
-	if (state == data->state_locked) {
-		report_value = SWITCH_LOCKED;
-	} else if (state == data->state_unlocked) {
-		report_value = SWITCH_UNLOCKED;
-	}
-
-	switch_set_state(&data->sdev, report_value);
+	switch_set_state(&data->sdev, state);
 	blocking_notifier_call_chain(
-			&switch_gpio_notifier, 
-			lock_hardware ? report_value : SWITCH_UNLOCKED, 
+			&switch_gpio_notifier,
+			lock_hardware ? state : SWITCH_UNLOCKED,
 			NULL);
 }
 
@@ -168,14 +172,8 @@ static int gpio_switch_probe(struct platform_device *pdev)
 	switch_data->state_on = pdata->state_on;
 	switch_data->state_off = pdata->state_off;
 	switch_data->sdev.print_state = switch_gpio_print_state;
-
-	if (pdata->active_low == 1) {
-		switch_data->state_locked = 0;
-		switch_data->state_unlocked = 1;
-	} else {
-		switch_data->state_locked = 1;
-		switch_data->state_unlocked = 0;
-	}
+    switch_data->active_low = pdata->active_low;
+    spdata = switch_data;
 
     ret = switch_dev_register(&switch_data->sdev);
 	if (ret < 0)
@@ -210,8 +208,9 @@ static int gpio_switch_probe(struct platform_device *pdev)
 		goto err_request_irq;
 
 	/* Reading from nvetc */
-	lock_hardware = nvtec_get_lock_key_enabled();
-	printk("%s: init lock_hardware is %s\n", __func__, lock_hardware ? "enable" : "disable");
+	lock_hardware = nvtec_is_switch_lock_enabled();
+	printk("%s: init lock_hardware is %s\n", __func__,
+           lock_hardware ? "enable" : "disable");
 
 	/* Perform initial detection */
 	gpio_switch_work(&switch_data->work);

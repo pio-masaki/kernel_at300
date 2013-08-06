@@ -4,18 +4,13 @@
 #include <linux/delay.h>
 #include <linux/suspend.h>
 #include <linux/mutex.h>
-#include <linux/reboot.h>
 #include <linux/gpio.h>
 #include <linux/charging-img.h>
 #include <linux/mfd/nvtec.h>
 #include <linux/switch_gpio.h>
 #include <linux/notifier.h>
-
-#ifdef CONFIG_TSPDRV
+#include <linux/power_supply.h>
 #include <asm/mach-types.h>
-#include <linux/pwm.h>
-#include <../gpio-names.h>
-#endif
 
 #include "image/battery.h"
 
@@ -23,584 +18,509 @@
 #define fb_height(fb)	((fb)->var.yres)
 
 struct charging_img {
-  struct task_struct *task;
-  unsigned int ac_in_pin;
-  struct notifier_block switch_gpio_notifier;
-  struct notifier_block ac_notifier;
+    struct backlight_device *bl_dev;
+    struct power_supply *psy;
+    struct task_struct *task;
+    struct notifier_block switch_gpio_notifier;
+    struct workqueue_struct *suspend_workq;
+    struct work_struct suspend_work;
+    struct mutex drawing_lock;
+    wait_queue_head_t wait_show_img;
+    int backlight_status;
+    unsigned long light_time;
+    bool show_img;
+    bool system_resume;
+    int bat_level;
+    bool lock_fn_enabled;
+    bool power_key_locked;
+    bool power_key_ignored;
 };
 
 typedef struct ScreenRec
 {
-  unsigned short width;
-  unsigned short height;
-  int stride;
-  unsigned char bpp;
-  int byte[MAX_BAT_LEVEL][MAX_LOGO_NUM];
-  unsigned short *data[MAX_BAT_LEVEL][MAX_LOGO_NUM];
+    unsigned short width;
+    unsigned short height;
+    int stride;
+    unsigned char bpp;
+    int byte[MAX_BAT_LEVEL][MAX_LOGO_NUM];
+    unsigned short *data[MAX_BAT_LEVEL][MAX_LOGO_NUM];
 } Screen;
 
-#ifdef CONFIG_TSPDRV
-struct pwm_vibrator {
-  int vibrator_en_pin;
-  struct pwm_device *pwm;
-  unsigned long duty_cycle;
-  unsigned long pwm_period;
-  unsigned long	timeout;
-  struct notifier_block dock_notifier;
-  struct regulator *reg;
-  bool on_dock;
-  bool amp_enabled;
-};
-#endif
+static struct input_handler charging_img_handler;
+static DECLARE_WAIT_QUEUE_HEAD(wait_on_charging);
 
 int is_boot_on_charging = 0;
 EXPORT_SYMBOL(is_boot_on_charging);
-struct workqueue_struct *suspend_workq;
 
-static struct charging_img *chargimg;
-static DEFINE_MUTEX(drawing_lock);
+enum{
+	BACKLIGHT_LIGHT,
+	BACKLIGHT_DIM,
+	BACKLIGHT_OFF,
+};
 
-static unsigned long dim_time = 0;
-static int backlight_is_dimmed = 0;
-static void suspend(struct work_struct *work);
-static DECLARE_WORK(suspend_work, suspend);
-static struct input_handler charging_img_handler;
-static DECLARE_WAIT_QUEUE_HEAD(wait_show_img);
-static DECLARE_WAIT_QUEUE_HEAD(wait_on_charging);
-
-static struct platform_driver charging_img_driver;
-static struct timer_list powerkey_press_timer;
-
-static unsigned long update_time = 0;
-static int show_img = 0;
-static int suspend_keep = 0;
-static int bat_level = -1;
-static int reboot = 0;
-static int lock_fn_enabled = 0;
-static int power_key_locked = 0;
-static int power_key_ignored = 0;
-static int init_done = 0;
-static int shutdown_by_mcu = 0;
-
-static void battery_level_update(void)
+static void battery_level_update(struct charging_img *chargimg)
 {
-  int value = -EINVAL;
-  int retry = 3;
+    struct power_supply *psy = chargimg->psy;
+    union power_supply_propval level;
 
-  do {
-    value = nvtec_battery_get_level();
-    if (value < 0) {
-      printk (KERN_ERR "charging-img: Failed to get battery level\n");
-      retry--;
-
-      if (retry == 0)
-        value = bat_level;  //if failed, keep last battery level
+    /* the power supply may not get during driver initial, get it again */
+    if (NULL == psy) {
+        psy = power_supply_get_by_name("battery");
+        if (NULL == psy) {
+            printk("battery_level_update: couldn't get battery power supply\n");
+            return;
+        }
     }
-  }  while (retry > 0 && value == -EINVAL);
 
-  if (nvtec_battery_full_charged()) {
-    value = 4;
-  }
+    if (psy->get_property(psy, POWER_SUPPLY_PROP_CAPACITY_LEVEL, &level))
+        return;
 
-  bat_level = value;
-  update_time = jiffies;
+    printk("battery_level_update: %d\n", level.intval);
+    chargimg->bat_level = level.intval - 1;
 }
 
 static void memset32(void *_ptr, unsigned int val, unsigned int count)
 {
-  unsigned int *ptr = _ptr;
-  while (count--)
-  *ptr++ = val;
+    unsigned int *ptr = _ptr;
+    while (count--)
+        *ptr++ = val;
 }
 
 static inline void sleep(unsigned jiffies)
 {
-  current->state = TASK_INTERRUPTIBLE;
-  schedule_timeout(jiffies);
-  return ;
+    current->state = TASK_INTERRUPTIBLE;
+    schedule_timeout(jiffies);
+    return ;
 }
 
-void show_charging_image(void)
+static void show_charging_image(struct charging_img *chargimg)
 {
-  struct fb_info *info;
-  struct fb_var_screeninfo var;
+    struct fb_info *info;
+    struct fb_var_screeninfo var;
 
-  int i=0, j=0;
-  int index = 0;
-  int byte;
-  unsigned int lux, luy;
-  unsigned int remain;
-  unsigned char *pDstPtr;
-  unsigned short *ptr;
-  Screen *pImage;
+    int i = 0, j = 0;
+    int index = 0;
+    int byte;
+    unsigned int lux, luy;
+    unsigned int remain;
+    unsigned char *pDstPtr;
+    unsigned short *ptr;
+    Screen *pImage;
 
-  info = registered_fb[0];
-  if (!info) {
-    printk(KERN_WARNING "%s: Can not access framebuffer\n",
-           __func__);
-  return;
-  }
-
-  mutex_lock(&drawing_lock);
-
-  for (i=0; i<MAX_LOGO_NUM*2-1; i++)
-  {
-    if (suspend_keep || reboot) break;
-
-    if (i >= MAX_LOGO_NUM) {
-      j++;
-    }
-    index = i-(2*j);
-
-    pImage = (Screen*)&s_batterylogo;
-    lux = (fb_width(info)-pImage->width) / 2;
-    luy = (fb_height(info)-pImage->height) / 2;
-    if (pImage->height > fb_height(info)) {
-      luy = 0;
+    info = registered_fb[0];
+    if (!info) {
+        printk(KERN_WARNING "%s: Can not access framebuffer\n",
+               __func__);
+        return;
     }
 
-    pDstPtr = (unsigned char*)(info->screen_base)+ luy*fb_width(info)*4 + lux*4;
-    ptr =pImage->data[bat_level][index];
-    byte = pImage->byte[bat_level][index];
-    remain = pImage->width;
+    mutex_lock(&chargimg->drawing_lock);
 
-    while (byte >= 6) {
-      unsigned short n = ptr[0];
-      unsigned int c = ptr[1] + (ptr[2]<<16);
+    for (i=0; i<MAX_LOGO_NUM*2-1; i++) {
+        if (chargimg->backlight_status == BACKLIGHT_OFF)
+            break;
 
-      while (n) {
-        if (n >= remain) {
-          memset32(pDstPtr, c, remain), pDstPtr += remain*4;
-          n -= remain, remain = 0;
-        } else {
-          memset32(pDstPtr, c, n), pDstPtr += n*4;
-          remain -= n, n = 0;
+        if (chargimg->system_resume){
+            fb_blank(registered_fb[0], FB_BLANK_UNBLANK);
+            break;
         }
-        if (remain == 0) {
-          remain = pImage->width;
-          pDstPtr += fb_width(info)*4- pImage->stride;
+        
+        if (i >= MAX_LOGO_NUM) {
+            j++;
         }
-      }
+        index = i-(2*j);
 
-      ptr += 3;
-      byte -= 6;
+        pImage = (Screen*)&s_batterylogo;
+        lux = (fb_width(info)-pImage->width) / 2;
+        luy = (fb_height(info)-pImage->height) / 2;
+        if (pImage->height > fb_height(info)) {
+            luy = 0;
+        }
+
+        pDstPtr = (unsigned char*)(info->screen_base)+ luy*fb_width(info)*4 + lux*4;
+        ptr =pImage->data[chargimg->bat_level][index];
+        byte = pImage->byte[chargimg->bat_level][index];
+        remain = pImage->width;
+
+        while (byte >= 6) {
+            unsigned short n = ptr[0];
+            unsigned int c = ptr[1] + (ptr[2]<<16);
+
+            while (n) {
+                if (n >= remain) {
+                    memset32(pDstPtr, c, remain), pDstPtr += remain*4;
+                    n -= remain, remain = 0;
+                } else {
+                    memset32(pDstPtr, c, n), pDstPtr += n*4;
+                    remain -= n, n = 0;
+                }
+                if (remain == 0) {
+                    remain = pImage->width;
+                    pDstPtr += fb_width(info)*4- pImage->stride;
+                }
+            }
+
+            ptr += 3;
+            byte -= 6;
+        }
+
+        sleep(6);
     }
 
-    sleep(6);
-  }
+    memcpy(&var, &info->var, sizeof(struct fb_var_screeninfo));
 
-  memcpy(&var, &info->var, sizeof(struct fb_var_screeninfo));
-
-  var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_FORCE;
-  fb_set_var(info, &var);
-  mutex_unlock(&drawing_lock);
+    var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_FORCE;
+    fb_set_var(info, &var);
+    mutex_unlock(&chargimg->drawing_lock);
 }
 
-extern struct backlight_device *get_backlight_dev(void);
-void light_backlight(void)
+static void light_backlight(struct charging_img *chargimg)
 {
-  struct backlight_device *bl;
+    struct backlight_device *bl = chargimg->bl_dev;
 
-  bl = get_backlight_dev();
-  if ( bl == NULL)
-  {
-    printk(KERN_WARNING "%s: Can not get backlight device\n",
-	   __func__);
-    return;
-  }
+    if ( bl == NULL) {
+        printk(KERN_WARNING "%s: Can not get backlight device\n",
+               __func__);
+        return;
+    }
 
-  printk("Light the panel backlight\n");
-  dim_time = jiffies;
-  backlight_is_dimmed = 0;
-  bl->props.brightness = 224;
-  backlight_update_status(bl);
-  
+    chargimg->light_time = jiffies;
+    chargimg->backlight_status = BACKLIGHT_LIGHT;
+    bl->props.brightness = 224;
+    backlight_update_status(bl);
+    printk("Light the panel backlight\n");
 }
 
-void dim_backlight(void)
+static void dim_backlight(struct charging_img *chargimg)
 {
-  struct backlight_device *bl;
+    struct backlight_device *bl = chargimg->bl_dev;
 
-  bl = get_backlight_dev();
-  if ( bl == NULL)
-  {
-    printk(KERN_WARNING "%s: Can not get backlight device\n",
-           __func__);
-    return;
-  }
+    if ( bl == NULL) {
+        printk(KERN_WARNING "%s: Can not get backlight device\n",
+               __func__);
+        return;
+    }
 
-  printk("Dim the panel backlight\n");
-  bl->props.brightness = 20;
-  backlight_update_status(bl);
-  dim_time = jiffies;
-  backlight_is_dimmed = 1;
+    chargimg->light_time = jiffies;
+    chargimg->backlight_status = BACKLIGHT_DIM;
+    bl->props.brightness = 20;
+    backlight_update_status(bl);
+    printk("Dim the panel backlight\n");
 }
 
-void turnoff_backlight(void)
+static void turnoff_backlight(struct charging_img *chargimg)
 {
-  struct backlight_device *bl;
+    struct backlight_device *bl = chargimg->bl_dev;
 
-  bl = get_backlight_dev();
-  if ( bl == NULL)
-  {
-    printk(KERN_WARNING "%s: Can not get backlight device\n",
-           __func__);
-    return;
-  }
+    if ( bl == NULL) {
+        printk(KERN_WARNING "%s: Can not get backlight device\n",
+               __func__);
+        return;
+    }
 
-  printk("Turn off the panel backlight\n");
-  bl->props.brightness = 0;
-  backlight_update_status(bl);
+    chargimg->backlight_status = BACKLIGHT_OFF;
+    bl->props.brightness = 0;
+    backlight_update_status(bl);
+    printk("Turn off the panel backlight\n");
 }
 
 static int switch_gpio_notify(struct notifier_block *nb, unsigned long state, void *unused)
 {
-  if (lock_fn_enabled) {
-    if (state == SWITCH_LOCKED)
-      power_key_locked = true;
-    else if (state == SWITCH_UNLOCKED)
-      power_key_locked = false;
+    struct charging_img *chargimg = 
+        container_of(nb, struct charging_img, switch_gpio_notifier);
 
-    printk("%s: lock hardware is %s\n", __func__,  power_key_locked ? "enable" : "disable");
-  }
+    if (chargimg->lock_fn_enabled) {
+        if (state == SWITCH_LOCKED)
+            chargimg->power_key_locked = true;
+        else if (state == SWITCH_UNLOCKED)
+            chargimg->power_key_locked = false;
 
-  return NOTIFY_DONE;
-}
+        printk("%s: lock hardware is %s\n", __func__,  
+               chargimg->power_key_locked ? "enable" : "disable");
+    }
 
-static int ac_notify(struct notifier_block *nb, unsigned long state, void *unused)
-{
-  if(state==0){
-    printk("AC removed, shutdown system....\n");
-    turnoff_backlight();
-    kernel_power_off();
-  }
-  return NOTIFY_DONE;
+    return NOTIFY_DONE;
 }
 
 static int charging_img_thread(void *args)
 {
-  battery_level_update();
-  light_backlight();
-  show_img = 1;
+    struct charging_img *chargimg = args;
+    light_backlight(chargimg);
 
-  do {
-    if(!is_boot_on_charging)
-      break;
+    do {
+        if(!is_boot_on_charging)
+            break;
 
-    if (reboot) {
-      kernel_restart("charging-img");
-    }
-	
-    if ((jiffies - update_time) > msecs_to_jiffies(30000)) {
-      battery_level_update();
-    }
+        if (chargimg->backlight_status == BACKLIGHT_LIGHT &&
+            ((jiffies - chargimg->light_time) > msecs_to_jiffies(60000))) {
+            dim_backlight(chargimg);
+        }
 
-    if (!backlight_is_dimmed &&
-       ((jiffies - dim_time) > msecs_to_jiffies(60000))) {
-      dim_backlight();
-    }
+        if(chargimg->backlight_status == BACKLIGHT_DIM &&
+           ((jiffies - chargimg->light_time) > msecs_to_jiffies(60000))) {
+            queue_work(chargimg->suspend_workq, &chargimg->suspend_work);
+        }
 
-    if(backlight_is_dimmed &&
-      ((jiffies - dim_time) > msecs_to_jiffies(60000))) {
-      queue_work(suspend_workq, &suspend_work);
-    }
+        battery_level_update(chargimg);
+        if (chargimg->bat_level == -1){  //if get battery level fail, don't show animation
+	    sleep(50);
+	    continue;
+	}
 
-    if (bat_level == -1 || !init_done)  //if get battery level fail, don't show animation
-	  continue;
+        wait_event_timeout(chargimg->wait_show_img, chargimg->show_img, msecs_to_jiffies(4000));
 
-    wait_event_timeout(wait_show_img, show_img, msecs_to_jiffies(4000));
+        show_charging_image(chargimg);
 
-    show_charging_image();
+        chargimg->show_img = false;
 
-    if (suspend_keep) {
-      show_img = 1;
-      suspend_keep = 0;
-    } else {
-      show_img = 0;
-    }
-  } while (!kthread_should_stop());
+        if (chargimg->system_resume) {
+            chargimg->show_img = true;
+            chargimg->system_resume = false;
+        } else {
+            chargimg->show_img = false;
+        }
+    } while (!kthread_should_stop());
 
-  platform_driver_unregister(&charging_img_driver);
-
-  /* input_unregister_handler(&charging_img_handler); */
-  /* destroy_workqueue(suspend_workq); */
-  /* kfree(chargimg); */
-  return 0;
+    return 0;
 }
 
 extern void request_suspend_state(suspend_state_t new_state);
 static void suspend(struct work_struct *work)
 {
-  printk("suspending system....\n");
-  mutex_lock(&drawing_lock);
-  request_suspend_state(PM_SUSPEND_MEM);
-  pm_suspend(PM_SUSPEND_MEM);
-  request_suspend_state(PM_SUSPEND_ON);
-  mutex_unlock(&drawing_lock);
+    struct charging_img *chargimg = container_of(work, struct charging_img, suspend_work);
 
-  if (power_key_locked) {
-    turnoff_backlight();  //even resume, don't turn on backlight
-    queue_work(suspend_workq, &suspend_work);
-  } else {
-    suspend_keep = 1;
-    show_img = 1;
-    battery_level_update();
-    wake_up(&wait_show_img);
-    light_backlight();
-    power_key_ignored = 0;
-  }
-}
+    printk("suspending system....\n");
+    mutex_lock(&chargimg->drawing_lock);
+    chargimg->power_key_ignored = true;
+    turnoff_backlight(chargimg);
+    request_suspend_state(PM_SUSPEND_MEM);
+    pm_suspend(PM_SUSPEND_MEM);
+    request_suspend_state(PM_SUSPEND_ON);
+    mutex_unlock(&chargimg->drawing_lock);
 
-#ifdef CONFIG_TSPDRV
-extern struct pwm_vibrator *get_pwm_vib(void);
-static void vibrate(void)
-{
-  unsigned long duty_cycle = 0;
-  struct pwm_vibrator *vib;
+    if (machine_is_avalon())
+        sleep(100);
 
-  vib = get_pwm_vib();
-  if ( vib == NULL)
-  {
-    printk(KERN_WARNING "%s: Can not get pwm device\n",
-	   __func__);
-    return;
-  }
-
-  if (machine_is_avalon())
-    duty_cycle = 15000;
-  else if (machine_is_sphinx())
-    duty_cycle = 16000;
-  else if (machine_is_titan())
-    duty_cycle = 16500;
-
-  if (vib->on_dock==false || machine_is_titan()) {
-    pwm_config(vib->pwm, duty_cycle, vib->pwm_period);
-    pwm_enable(vib->pwm);
-    gpio_direction_output(vib->vibrator_en_pin, 1);
-    mdelay(300);
-    gpio_direction_output(vib->vibrator_en_pin, 0);
-    pwm_disable(vib->pwm);
-  }
-}
-#else
-static void vibrate(void)
-{
-  return;
-}
-#endif
-static void boot_android(unsigned long val)
-{
-  del_timer(&powerkey_press_timer);
-
-  reboot = 1;
-  vibrate();
-}
-
-static void monitor_power_key(int is_pressed)
-{
-  printk("power key %s\n", is_pressed?"pressed":"released");
-
-  if (power_key_ignored)
-    return;
-
-  if (is_pressed) {
-    if (shutdown_by_mcu == 0) {
-      init_timer(&powerkey_press_timer);
-      powerkey_press_timer.function = boot_android;
-      powerkey_press_timer.expires = jiffies;
-      powerkey_press_timer.data = 0;
-      mod_timer(&powerkey_press_timer,jiffies + (2*HZ));
+    if (chargimg->power_key_locked) {
+        turnoff_backlight(chargimg);  //even resume, don't turn on backlight
+        queue_work(chargimg->suspend_workq, &chargimg->suspend_work);
+    } else {
+        chargimg->system_resume = true;
+        chargimg->show_img = true;
+        wake_up(&chargimg->wait_show_img);
+        light_backlight(chargimg);
+        chargimg->power_key_ignored = false;
     }
-  } else {
-    if (!reboot)
-    {
-      if (shutdown_by_mcu == 0) {
-        del_timer(&powerkey_press_timer);
-      }
-      power_key_ignored = 1;
-      queue_work(suspend_workq, &suspend_work);
+}
+
+static void monitor_power_key(struct charging_img *chargimg, int is_pressed)
+{
+    printk("power key %s\n", is_pressed ? "pressed" : "released");
+
+    if (chargimg->power_key_locked || 
+        chargimg->suspend_workq == NULL ||
+        chargimg->power_key_ignored)
+        return;
+
+    if (!is_pressed) { //action while key released
+        queue_work(chargimg->suspend_workq, &chargimg->suspend_work);
     }
-  }
 }
 
 static void charging_img_event(struct input_handle *handle, unsigned int type,
                                unsigned int code, int value)
 {
-  switch (code) {
+    struct charging_img *chargimg = handle->private;
+
+    switch (code) {
     case KEY_POWER:
-      if (init_done)
-        monitor_power_key(value);
-      break;
+        monitor_power_key(chargimg, value);
+        break;
     default:
-      break;
-  }
+        break;
+    }
 }
 
 static int charging_img_connect(struct input_handler *handler,
                                 struct input_dev *dev,
                                 const struct input_device_id *id)
 {
-  struct input_handle *handle;
-  int ret;
+    struct input_handle *handle;
+    int ret;
 
-  handle = kzalloc(sizeof(struct input_handle), GFP_KERNEL);
-  if (!handle)
-    return -ENOMEM;
+    handle = kzalloc(sizeof(struct input_handle), GFP_KERNEL);
+    if (!handle)
+        return -ENOMEM;
 
-  handle->dev = dev;
-  handle->handler = handler;
-  handle->name = "charging-img";
+    handle->dev = dev;
+    handle->handler = handler;
+    handle->name = "charging-img";
+    handle->private = handler->private;
 
-  ret = input_register_handle(handle);
-  if (ret) {
-    printk (KERN_ERR "charging-img: Failed to register input power handler");
-    kfree(handle);
-    return ret;
-  }
+    ret = input_register_handle(handle);
+    if (ret) {
+        printk (KERN_ERR "charging-img: Failed to register input power handler");
+        kfree(handle);
+        return ret;
+    }
 
-  ret = input_open_device(handle);
-  if (ret) {
-    printk(KERN_ERR "charging-img: Failed to open input power device");
-    input_unregister_handle(handle);
-    kfree(handle);
-    return ret;
-  }
+    ret = input_open_device(handle);
+    if (ret) {
+        printk(KERN_ERR "charging-img: Failed to open input power device");
+        input_unregister_handle(handle);
+        kfree(handle);
+        return ret;
+    }
 
-  return 0;
+    return 0;
 }
 
 static void charging_img_disconnect(struct input_handle *handle)
 {
-  input_close_device(handle);
-  input_unregister_handle(handle);
-  kfree(handle);
+    input_close_device(handle);
+    input_unregister_handle(handle);
+    kfree(handle);
 }
 
 static const struct input_device_id charging_img_ids[] = {
-  {
-    .flags = INPUT_DEVICE_ID_MATCH_EVBIT,
-    .evbit = { BIT_MASK(EV_KEY) },
-  },
-  { },
+    {
+        .flags = INPUT_DEVICE_ID_MATCH_EVBIT,
+        .evbit = { BIT_MASK(EV_KEY) },
+    },
+    { },
 };
 
 MODULE_DEVICE_TABLE(input, charging_img_ids);
 
 static struct input_handler charging_img_handler = {
-  .event = charging_img_event,
-  .connect = charging_img_connect,
-  .disconnect = charging_img_disconnect,
-  .name = "charging-img",
-  .id_table = charging_img_ids,
+    .event = charging_img_event,
+    .connect = charging_img_connect,
+    .disconnect = charging_img_disconnect,
+    .name = "charging-img",
+    .id_table = charging_img_ids,
 };
 
 static int charging_img_probe(struct platform_device *pdev)
 {
-  int ret;
+    struct charging_img_data *pdata = pdev->dev.platform_data;
+    struct charging_img *chargimg;
+    int ret;
 
-  struct charging_img_data *pdata = pdev->dev.platform_data;
-  struct charging_img *charging;
+    if (!is_boot_on_charging)
+        return -ENODEV;
 
-  if (!is_boot_on_charging)
-    return -ENODEV;
+    chargimg = kzalloc(sizeof(struct charging_img), GFP_KERNEL);
+    if (!chargimg)
+        return -ENOMEM;
 
-  charging = kzalloc(sizeof(struct charging_img), GFP_KERNEL);
-  if (!charging)
-      return -ENOMEM;
+    chargimg->bat_level = -1;
+    chargimg->lock_fn_enabled = nvtec_is_switch_lock_enabled();
+    mutex_init(&chargimg->drawing_lock);
 
-  lock_fn_enabled = nvtec_hw_button_lock_configured();
+    chargimg->bl_dev = platform_get_drvdata(pdata->bl_pdev);
+    /* may not get the battery power supply because battery driver not yet initialized*/
+    chargimg->psy = power_supply_get_by_name("battery");
+    chargimg->switch_gpio_notifier.notifier_call = switch_gpio_notify;
+    switch_gpio_notifier_register(&chargimg->switch_gpio_notifier);
 
-  shutdown_by_mcu = nvtec_mcu_chk_version();
-  if (shutdown_by_mcu < 0)
-    printk(KERN_ERR "charging-img: Can't MCU firmware version\n");
+    chargimg->suspend_workq = create_singlethread_workqueue("suspend");
+    if (chargimg->suspend_workq == NULL) {
+        ret = -ENOMEM;
+        goto error_create_wq;
+    }
 
-  chargimg = charging;
-  charging->ac_in_pin = pdata->ac_in_pin;
-  charging->switch_gpio_notifier.notifier_call = switch_gpio_notify;
-  switch_gpio_notifier_register(&charging->switch_gpio_notifier);
+    INIT_WORK(&chargimg->suspend_work, suspend);
+    init_waitqueue_head(&chargimg->wait_show_img);
 
-  charging->ac_notifier.notifier_call = ac_notify;
-  nvtec_ac_notifier_register(&charging->ac_notifier);
+    chargimg->task = kthread_run(charging_img_thread, chargimg, "charging-img");
+    if (!chargimg->task) {
+        ret = -EFAULT;
+        goto error_thread;
+    }
 
-  suspend_workq = create_singlethread_workqueue("suspend");
-  if (suspend_workq == NULL) {
-    kfree(charging);
-    return -ENOMEM;
-  }
+    charging_img_handler.private = chargimg;
+    ret = input_register_handler(&charging_img_handler);
+    if (ret < 0) {
+        ret = -EFAULT;
+        goto error_input_reg;
+    }
 
-  charging->task = kthread_run(charging_img_thread, charging, "charging-img");
-  if (!charging->task) {
-    destroy_workqueue(suspend_workq);
-    kfree(charging);
-    return -EFAULT;
-  }
+    platform_set_drvdata(pdev, chargimg);
 
-  ret = input_register_handler(&charging_img_handler);
-  if (ret < 0) {
-    kthread_stop(charging->task);
-    destroy_workqueue(suspend_workq);
-    kfree(charging);
-    return -EFAULT;
-  }
+    return 0;
+ error_input_reg:
+    cancel_work_sync(&chargimg->suspend_work);
+    kthread_stop(chargimg->task);
+ error_thread:
+    destroy_workqueue(chargimg->suspend_workq);
+ error_create_wq:
+    mutex_destroy(&chargimg->drawing_lock);
+    kfree(chargimg);
 
-  return 0;
+    return ret;
 }
 
-static int charging_img_remove(struct platform_device *pdev) {
-  printk("charging_img_remove\n");
-  input_unregister_handler(&charging_img_handler);
-  /* kthread_stop(chargimg->task); */
-  destroy_workqueue(suspend_workq);
-  switch_gpio_notifier_unregister(&chargimg->switch_gpio_notifier);
-  nvtec_ac_notifier_unregister(&chargimg->ac_notifier);
-  kfree(chargimg);
+static int charging_img_remove(struct platform_device *pdev)
+{
+    struct charging_img *chargimg = platform_get_drvdata(pdev);
+    
+    printk("charging_img_remove\n");
+    input_unregister_handler(&charging_img_handler);
+    cancel_work_sync(&chargimg->suspend_work);
+    kthread_stop(chargimg->task);
+    destroy_workqueue(chargimg->suspend_workq);
+    switch_gpio_notifier_unregister(&chargimg->switch_gpio_notifier);
+    mutex_destroy(&chargimg->drawing_lock);
+    kfree(chargimg);
 
-  return 0;
+    return 0;
 }
 
 static struct platform_driver charging_img_driver = 
-{
-  .probe = charging_img_probe,
-  .remove = charging_img_remove,
-  .driver = {
-    .name = "charging-img",
-    .owner = THIS_MODULE,
-  },
-};
+    {
+        .probe = charging_img_probe,
+        .remove = charging_img_remove,
+        .driver = {
+            .name = "charging-img",
+            .owner = THIS_MODULE,
+        },
+    };
 
 static int __init charging_img_init(void)
 {
-  if (!is_boot_on_charging)
-    return -ENODEV;
+    if (!is_boot_on_charging)
+        return -ENODEV;
 
-  return platform_driver_register(&charging_img_driver);
+    return platform_driver_register(&charging_img_driver);
 }
 
 static void __exit charging_img_exit(void)
 {
-  platform_driver_unregister(&charging_img_driver);
+    platform_driver_unregister(&charging_img_driver);
 }
 
 module_init(charging_img_init);
 module_exit(charging_img_exit);
 
+MODULE_DESCRIPTION("Power off Chaging Driver");
+MODULE_AUTHOR("YuYang Chao <YuYang_Chao@pegatroncorp.com>");
+MODULE_LICENSE("GPL");
+
 void wait_boot_on_charging(void)
 {
-  if (is_boot_on_charging)
-  {
-    printk("wait for boot on charging ....\n");
-
-    init_done = 1;
-    wait_event(wait_on_charging, !is_boot_on_charging);
-  }
+    if (is_boot_on_charging)
+        {
+            printk("wait for boot on charging ....\n");
+            wait_event(wait_on_charging, !is_boot_on_charging);
+        }
 }
 
 EXPORT_SYMBOL(wait_boot_on_charging);
 
 static int __init set_boot_on_charging(char *str)
 {
-  is_boot_on_charging = 1;
-  return 1;
+    is_boot_on_charging = 1;
+    return 1;
 }
 
 __setup("poweroff_charge", set_boot_on_charging);

@@ -40,7 +40,7 @@ else # epivers.h doesn't exist
 	fi
 
 	# Following SVNURL should be expanded on checkout
-	SVNURL='$HeadURL: http://svn.sj.broadcom.com/svn/wlansvn/proj/tags/FALCON/FALCON_REL_5_90_195_26/src/include/epivers.sh $'
+	SVNURL='$HeadURL: http://svn.sj.broadcom.com/svn/wlansvn/proj/tags/FALCON/FALCON_REL_5_90_195_89/src/include/epivers.sh $'
 
 	# If SVNURL isn't expanded, extract it from svn info
 	if echo "$SVNURL" | grep -vq "HeadURL.*/proj/.*"; then

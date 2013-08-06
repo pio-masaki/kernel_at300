@@ -7,7 +7,7 @@
 **     Output data handler module for TSP 3000 Edition.
 **     ‘This module supports only one actuator and one sample per update.
 **
-** Portions Copyright (c) 2011 Immersion Corporation. All Rights Reserved. 
+** Portions Copyright (c) 2011-2012 Immersion Corporation. All Rights Reserved. 
 **
 ** This file contains Original Code and/or Modifications of Original Code 
 ** as defined in and that are subject to the GNU Public License v2 - 
@@ -38,14 +38,14 @@ int SaveOutputData(const char *outputDataBuffer, int count)
     /* Check buffer size */
     if (count < SPI_HEADER_SIZE)
     {
-        DbgOut((KERN_ERR "SaveOutputData: invalid write buffer size.\n"));
+        DbgOut((DBL_ERROR, "SaveOutputData: invalid write buffer size.\n"));
         return 0;
     }
 
     /* Check data buffer address */
     if (0 == outputDataBuffer)
     {
-        DbgOut((KERN_ERR "SaveOutputData: outputDataBuffer invalid.\n"));
+        DbgOut((DBL_ERROR, "SaveOutputData: outputDataBuffer invalid.\n"));
         return 0;
     }
 

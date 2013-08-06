@@ -6,3 +6,4 @@ obj-$(CONFIG_SWITCH_AST_DOCK)  += switch_ast_dock.o
 ifeq ($(BOARD_HAVE_3G),true)
 obj-$(CONFIG_SENSORS_IQS128)	+= iqs128_cap_sensor.o
 endif
+

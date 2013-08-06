@@ -6,7 +6,7 @@
 ** Description: 
 **     Time helper functions for Linux.
 **
-** Portions Copyright (c) 2008-2011 Immersion Corporation. All Rights Reserved. 
+** Portions Copyright (c) 2008-2012 Immersion Corporation. All Rights Reserved. 
 **
 ** This file contains Original Code and/or Modifications of Original Code 
 ** as defined in and that are subject to the GNU Public License v2 - 
@@ -128,7 +128,7 @@ static void VibeOSKernelLinuxStartTimer(void)
         res = down_interruptible(&g_hSemaphore);  /* wait for the semaphore to be freed by the timer */
         if (res != 0)
         {
-            DbgOut((KERN_INFO "VibeOSKernelLinuxStartTimer: down_interruptible interrupted by a signal.\n"));
+            DbgOut((DBL_INFO, "VibeOSKernelLinuxStartTimer: down_interruptible interrupted by a signal.\n"));
         }
     }
 

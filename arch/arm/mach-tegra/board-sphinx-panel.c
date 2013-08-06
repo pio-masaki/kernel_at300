@@ -1,7 +1,7 @@
 /*
  * arch/arm/mach-tegra/board-sphinx-panel.c
  *
- * Copyright (c) 2010-2011, NVIDIA Corporation.
+ * Copyright (c) 2010-2012, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,8 @@
  */
 
 #include <linux/delay.h>
+#include <linux/ion.h>
+#include <linux/tegra_ion.h>
 #include <linux/gpio.h>
 #include <linux/regulator/consumer.h>
 #include <linux/resource.h>
@@ -32,16 +34,18 @@
 #include <linux/workqueue.h>
 #include <asm/atomic.h>
 #include <linux/nvhost.h>
-#include <mach/nvmap.h>
+#include <linux/nvmap.h>
 #include <mach/irqs.h>
 #include <mach/iomap.h>
 #include <mach/dc.h>
 #include <mach/fb.h>
+#include <mach/smmu.h>
 
 #include "board.h"
 #include "board-ast.h"
 #include "devices.h"
 #include "gpio-names.h"
+#include "tegra3_host1x_devices.h"
 
 //#define BRIGHTNESS_MAX 255
 //#define DSI_PANEL_RESET 0
@@ -70,9 +74,6 @@ static u8 gpio_config_tbl[] = {
   ast_lcd_shutdown,ast_lcd_reset,ast_lcd_spiclk,
   ast_lcd_cs0n, ast_lcd_spisdin, ast_lcd_spisdout
 };
-
-/* common pins( backlight ) for all display boards */
-#define AST_HDMI_HPD         TEGRA_GPIO_PN7
 
 #define ESDON_MIPICLOCK_WORKAROUND
 #ifdef ESDON_MIPICLOCK_WORKAROUND
@@ -109,19 +110,7 @@ static atomic_t sd_brightness = ATOMIC_INIT(MAX_BRIGHTNESS);
 
 #define NV_ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 static int ast_spi_write(int Data);
-
-#define SEND_SSD2825_SEQ(p) \
-do { \
-    int i; \
-    for (i = 0; i < NV_ARRAY_SIZE(p); i++) { \
-        if (p[i] < 0) { \
-            mdelay(-1 * p[i]); \
-        } else if (p[i]){ \
-            ast_spi_write(p[i]); \
-        } else \
-            break; \
-    } \
-} while(0)
+static int ast_spi_read(int Data, int *pRxBuffer);
 
 #define SEND_SSD2825_SEQ_WS(p,s) \
 do { \
@@ -135,6 +124,10 @@ do { \
             break; \
     } \
 } while(0)
+
+#define SEND_SSD2825_SEQ(p) \
+    SEND_SSD2825_SEQ_WS(p,NV_ARRAY_SIZE(p))
+
 /*
  * Solomaon MIPI register for SSD2825
  */
@@ -430,13 +423,6 @@ static int ast_gamma_250[] = { //Default Gamma Value
     -(LINTVL),
 };
 
-static struct backlight_device *bl_dev = NULL;
-struct backlight_device *get_backlight_dev(void)
-{
-    return bl_dev;
-}
-EXPORT_SYMBOL(get_backlight_dev);
-
 typedef struct{
   unsigned char nits;
   int *gamma_table;
@@ -470,6 +456,37 @@ static struct platform_device ast_backlight_device = {
 	.name = "pwm-backlight",
 	.id = -1,
 };
+
+#define SSD2825_WritePanel_WS(p) SSD2825_WritePanel(p,NV_ARRAY_SIZE(p))
+static void SSD2825_WritePanel(const int *cmdSeq, int cmdCnt)
+{
+    int i, iGpdr=0, iCnt=0;
+    for (i = 0; i < cmdCnt; i++) {
+        if (cmdSeq[i] < 0) {
+            mdelay(-1 * cmdSeq[i]);
+        } else if (cmdSeq[i] == _CKBTA) {
+            int j, buffer;
+            for (j = 0; j < 10; j++) {
+                ast_spi_write(_SEND(ISR));
+                ast_spi_read(_RDCYCL, &buffer);
+                if ((buffer&0x1C) == 0x1C) {      // Check BTAR == 1, ARR == 1, ATR == 1
+                    break;
+                }
+                mdelay(1);
+            }
+            if ((j >= 10) && (++iCnt <= 5)) {     // Acknowledge Error on BTA? then, Has chance to retry?
+                printk(KERN_INFO "%s: ACK Op, CMD(%x)=%x\n", __func__, cmdSeq[iGpdr+1], buffer);
+                ast_spi_write(cmdSeq[i = iGpdr]);
+            }
+        } else {
+            if (cmdSeq[i] == _SEND(GPDR)) {
+                iGpdr = i;
+                iCnt = 0;
+            }
+            ast_spi_write(cmdSeq[i]);
+        }
+    }
+}
 
 static void ssd2825_init_pll(int plcr, int ccr)
 {
@@ -541,9 +558,10 @@ static void s6e8ab0x_panel_cond(void)
         _SET(0x103F), _SET(0x2000), _SET(0x1002), _SET(0x107D), _SET(0x0000), _SET(0x0802), _SET(0x3410),
         _SET(0x3434), _SET(0xC1C0), _SET(0x0001), _SET(0x82C1), _SET(0xC800), _SET(0xE3C1), _SET(0x0001),
         -(LINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
 
 static void s6e8ab0x_apply_level2_key(void)
@@ -554,9 +572,10 @@ static void s6e8ab0x_apply_level2_key(void)
         _SEND(GPDR),				// Generic Packet Drop
         _SET(0x5AF0), _SET(0x005A),		// <<Apply Level2 Key (Auto Power On)>>
         -(SINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
 
 static void s6e8ab0x_sleep_out(void)
@@ -579,9 +598,10 @@ static void s6e8ab0x_power_control_set(void)
         _SEND(GPDR),			        // Generic Packet Drop
         _SET(0x50F5), _SET(0x3333),_SET(0x5400),_SET(0x3396),_SET(0x0001),	// <<Power Control Set >>
         -(SINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
 
 static void s6e8ab0x_apply_mtp_key(void)
@@ -591,9 +611,11 @@ static void s6e8ab0x_apply_mtp_key(void)
         _SEND(PSCR1), _SET(0x0003),		// Transmit Data Count = 3 bytes
         _SEND(GPDR),				// Generic Packet Drop
         _SET(0x5AF1), _SET(0x005A),		// <<Apply MTP Key >>
+        -(SINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
 
 static void s6e8ab0x_display_cond(void)
@@ -604,13 +626,15 @@ static void s6e8ab0x_display_cond(void)
         _SEND(GPDR),				// Generic Packet Drop
         _SET(0xC8F2), _SET(0x0D05),		// <<[2] Display Condition Set>>
         -(MINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
 
 static void s6e8ab0x_gamma_select(int gamma)
 {
+    // NOT TO USE _CHBTA OUTSIDE PANEL INITIALIZATION
     static const int data_to_send[] =
     {
         _SEND(PSCR1), _SET(2),			// Transmit Data Count = 1 (w/o Generic Packet Drop)???
@@ -638,6 +662,7 @@ static int s6e8ab0x_gamma_cond(void)
 #endif
 static void s6e8ab0x_gamma_update(void)
 {
+    // NOT TO USE _CHBTA OUTSIDE PANEL INITIALIZATION
     static const int data_to_send[] =
     {
         _SEND(PSCR1), _SET(2),			// Transmit Data Count = 2 bytes
@@ -656,9 +681,11 @@ static void s6e8ab0x_elvss_set(void)
         _SEND(PSCR1), _SET(3),			// Transmit Data Count = 3 bytes
         _SEND(GPDR),				// Generic Packet Drop
         _SET(0x04B1), _SET(0x0000),		// <<[5-1] Dynamic ELVSS set: DEFAULT>>
+        -(SINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
 #endif
 #if OPTIMUM_ELVSS
@@ -695,12 +722,11 @@ static void s6e8ab0x_optimum_elvss_ctrl(void)
         data_to_send[4] = _SET((u8)(panel_id3)+ELVSS_2H_OFFSET+0x0C); //0xA9
     }
 
-    //PNL_PRINT(("%s: panel id3 = 0x%x ELVSS_2H_OFFSET = 0x%x elvss 2 = 0x%x\n",__func__,panel_id3,ELVSS_2H_OFFSET,(u8)(data_to_send[4])));
-
     if ((u8)(data_to_send[4]) >= 0xa9 ) 
         data_to_send[4] = _SET(0xa9);
     //PNL_PRINT(("%s: luminance = %d elvss 2 = 0x%x\n",__func__,luminance,data_to_send[4]));
 
+    // NOT TO USE _CHBTA OUTSIDE PANEL INITIALIZATION
     SEND_SSD2825_SEQ(data_to_send);
 }
 #endif
@@ -729,14 +755,16 @@ static void s6e8ab0x_etc_cond1(void)
         _SEND(PSCR1), _SET(7),			// Transmit Data Count = 7 bytes
         _SEND(GPDR),			        // <<[4] Etc Condition Set>>
         _SET(0x0BF4), _SET(0x060A), _SET(0x330B), _SET(0x0002),
-        //-(SINTVL),
+        -(SINTVL),
+        _CKBTA,
         _SEND(PSCR1), _SET(4),			// Transmit Data Count = 4 bytes
         _SEND(GPDR),			        // Generic Packet Drop
         _SET(0x85F6), _SET(0x0200),		// <<[4] Etc Condition Set -- rotate 180 degree>>
         -(LINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
 
 #if SET_NVM
@@ -749,9 +777,10 @@ static void s6e8ab0x_elvss_nvm_set(void)
         _SET(0x14D9), _SET(0x205C), _SET(0x0F0C), _SET(0x0041), _SET(0x1110), _SET(0xA812), _SET(0x0055),
         _SET(0x0000), _SET(0x8000), _SET(0xEDCB), _SET(0xAF7F),
         -(LINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
 #endif
 
@@ -763,23 +792,12 @@ static void s6e8ab0x_acl_on(void)
         _SEND(PSCR1), _SET(2),			// Transmit Data Count = 2 bytes
         _SEND(GPDR),				//
         _SET(0x01C0),				// <ACL on>>
+        -(SINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
-/*
-static void s6e8ab0x_acl_off(void)
-{
-    static const int data_to_send[] =
-    {
-        _SEND(PSCR1), _SET(2),			// Transmit Data Count = 2 bytes
-        _SEND(GPDR),				//
-        _SET(0x00C0),				// <ACL on>>
-    };
-
-    SEND_SSD2825_SEQ(data_to_send);
-}
-*/
 
 /* Full white 40% reducing setting */
 static void s6e8ab0x_acl_ctrl_set(void)
@@ -792,9 +810,11 @@ static void s6e8ab0x_acl_ctrl_set(void)
         _SET(0x4DC1),_SET(0x1D96),_SET(0x0000),_SET(0xFF04),_SET(0x0000),_SET(0x1F03),
         _SET(0x0000),_SET(0x0000),_SET(0x0000),_SET(0x2100),_SET(0x3737),_SET(0x3737),
         _SET(0x3737),_SET(0x3737),_SET(0x4D1D),_SET(0x0096),
+        -(SINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(cutoff_40);
+    SSD2825_WritePanel_WS(cutoff_40);
 }
 #endif
 static void s6e8ab0x_display_on(void)
@@ -817,9 +837,10 @@ static void s6e8ab0x_global_parameter(void)
         _SEND(GPDR),				// Global Parameter
         _SET(0x03B0),				// to Skip 3 bytes for IDs
         -(SINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
 
 static void s6e8ab0x_vregout_set(void)
@@ -830,9 +851,11 @@ static void s6e8ab0x_vregout_set(void)
         _SEND(PSCR1), _SET(9),			// Transmit Data Count = 9 bytes
         _SEND(GPDR),				// <<[6] VREGOUT SET>>
         _SET(0x01D1), _SET(0x000B), _SET(0x4000), _SET(0x000D), _SET(0x0000),	// <<Display On>>
+        -(SINTVL),
+        _CKBTA,
     };
 
-    SEND_SSD2825_SEQ(data_to_send);
+    SSD2825_WritePanel_WS(data_to_send);
 }
 
 static int s6e8ab0x_panel_init(void)
@@ -894,7 +917,7 @@ static int ast_spi_write(int Data)
         return ret;
 }
 
-static int ast_spi_read(int Data,u8 *pRxBuffer)
+static int ast_spi_read(int Data, int *pRxBuffer)
 {
         struct spi_message	msg;
         struct spi_transfer	xfer;
@@ -910,13 +933,12 @@ static int ast_spi_read(int Data,u8 *pRxBuffer)
         // Add our only transfer to the message
         spi_message_add_tail(&xfer, &msg);
 
-        //PNL_PRINT("sending %02x %02x %02x ...\n",pTxBuffer[0], pTxBuffer[1], pTxBuffer[2]);
-
         // Send the message and wait for completion
         ret = spi_sync(w1_disp1_spi, &msg);
         if (ret < 0)
            pr_err("spi_read: spi couldn't read \n");
 
+        (*pRxBuffer) &= 0xFFFF;
         return ret;
 }
 
@@ -994,8 +1016,8 @@ static ssize_t r_panel_reg_read_file(struct file *file, char __user *user_buf,
 	int buffer;
 	int i, j;
 	int wdata[] = {
-			/*_SEND(LCR), _SET(0x0001),*/ _SEND(MRSR), _SET(PANEL_READ_NUM), _SEND(CFGR),
-			_SET(0x03CB), _SEND(PSCR1), _SET(1), _SEND(GPDR), _SET(spi_panel_addr_r)};
+		/*_SEND(LCR), _SET(0x0001),*/ _SEND(MRSR), _SET(PANEL_READ_NUM), _SEND(CFGR),
+		_SET(0x03CB), _SEND(PSCR1), _SET(1), _SEND(GPDR), _SET(spi_panel_addr_r) };
 	int rdata = _RDCYCL;
 
 	if (*ppos < 0 || !count)
@@ -1013,7 +1035,7 @@ static ssize_t r_panel_reg_read_file(struct file *file, char __user *user_buf,
 	{
 		buffer = 0;
 		ast_spi_write(_SEND(ISR));
-		ast_spi_read(rdata, (u8 *)&buffer);
+		ast_spi_read(rdata, &buffer);
 
 		if (buffer & 0x01)	//Check RDR (Read Data Ready)
 		{
@@ -1021,7 +1043,7 @@ static ssize_t r_panel_reg_read_file(struct file *file, char __user *user_buf,
 			ast_spi_write(_SEND(RR));
 			for(j=0; j<PANEL_READ_NUM; j+=2) {
 				buffer = 0;
-				ast_spi_read(rdata, (u8 *)&buffer);
+				ast_spi_read(rdata, &buffer);
 				//printk(KERN_INFO "addr %d: 0x%08X\n", j, buffer);
 				if(0x00 == (j % 8))
 					sprintf(buf, "%s%02d: ", buf, j);
@@ -1166,10 +1188,10 @@ static ssize_t bridge_register_read_file(struct file *file, char __user *user_bu
 
 	mutex_lock(&lcd_lock);
 	ast_spi_write(_CMDCYCL + spi_bridge_index);
-	ast_spi_read(rdata, (u8 *)&buffer);
+	ast_spi_read(rdata, &buffer);
 	mutex_unlock(&lcd_lock);
 
-	sprintf(buf, "0x%04X\n", buffer & 0xFFFF);
+	sprintf(buf, "0x%04X\n", buffer);
 	ret = strlen(buf);
 	if (copy_to_user(user_buf, buf, ret))
 		ret = -EFAULT;
@@ -1219,7 +1241,7 @@ static const struct file_operations bridge_register_fops = {
 static ssize_t brightness_level_read_file(struct file *file, char __user *user_buf,
 				   size_t count, loff_t *ppos)
 {
-	char buf[32];
+	char buf[50];
 
          struct backlight_device *bd = platform_get_drvdata(&ast_backlight_device);
 
@@ -1402,12 +1424,11 @@ static int read_panel_status(int regno)
 	for (i=0; i<50; i++) {
 		buffer = 0;
 		ast_spi_write(_SEND(ISR));
-		ast_spi_read(rdata, (u8*)&buffer);
+		ast_spi_read(rdata, &buffer);
 		if (buffer & 0x01) {		//Check RDR (Read Data Ready)
 			buffer = 0;
 			ast_spi_write(_SEND(RR));
-			ast_spi_read(rdata, (u8*)&buffer);
-			buffer &= 0xFFFF;
+			ast_spi_read(rdata, &buffer);
 			goto _exit;
 		}
 		mdelay(1);
@@ -1483,7 +1504,7 @@ static int ast_panel_disable(void)
 		gpio_set_value(ast_lcd_shutdown, 1);
 
 		ast_panel_config_pins();
-                tegra_gpio_disable(AST_HDMI_HPD);
+                //tegra_gpio_disable(HDMI_HPD_GPIO);
 		mutex_unlock(&lcd_lock);
 
 		panel_on = 0;
@@ -1803,7 +1824,7 @@ static struct tegra_dc_out ast_disp1_out =
 	.order		= TEGRA_DC_ORDER_RED_BLUE,
 	.dcc_bus	= -1,
 	.sd_settings	= &ast_sd_settings,
-	.parent_clk	= "pll_p",
+	.parent_clk	= "pll_d_out0",
 	.type		= TEGRA_DC_OUT_RGB,
 	.depth		= 24,
 	.dither		= TEGRA_DC_ORDERED_DITHER,
@@ -1840,8 +1861,9 @@ static struct tegra_dc_out ast_disp2_out =
 {
 	.type		= TEGRA_DC_OUT_HDMI,
 	.flags		= TEGRA_DC_OUT_HOTPLUG_HIGH,
+    .parent_clk = "pll_d2_out0",
 	.dcc_bus	= 3,
-	.hotplug_gpio = AST_HDMI_HPD,
+	.hotplug_gpio = HDMI_HPD_GPIO,
 	.max_pixclock	= KHZ2PICOS(148500),
 	.align		= TEGRA_DC_ALIGN_MSB,
 	.order		= TEGRA_DC_ORDER_RED_BLUE,
@@ -1870,6 +1892,7 @@ static struct nvhost_device ast_disp2_device =
 	},
 };
 
+#if defined(CONFIG_TEGRA_NVMAP)
 static struct nvmap_platform_carveout ast_carveouts[] =
 {
 	[0] = NVMAP_HEAP_CARVEOUT_IRAM_INIT,
@@ -1895,10 +1918,66 @@ static struct platform_device ast_nvmap_device = {
 		.platform_data = &ast_nvmap_data,
 	},
 };
+#endif
+
+#if defined(CONFIG_ION_TEGRA)
+
+static struct platform_device tegra_iommu_device = {
+	.name = "tegra_iommu_device",
+	.id = -1,
+	.dev = {
+		.platform_data = (void *)((1 << HWGRP_COUNT) - 1),
+	},
+};
+
+static struct ion_platform_data tegra_ion_data = {
+	.nr = 4,
+	.heaps = {
+		{
+			.type = ION_HEAP_TYPE_CARVEOUT,
+			.id = TEGRA_ION_HEAP_CARVEOUT,
+			.name = "carveout",
+			.base = 0,
+			.size = 0,
+		},
+		{
+			.type = ION_HEAP_TYPE_CARVEOUT,
+			.id = TEGRA_ION_HEAP_IRAM,
+			.name = "iram",
+			.base = TEGRA_IRAM_BASE + TEGRA_RESET_HANDLER_SIZE,
+			.size = TEGRA_IRAM_SIZE - TEGRA_RESET_HANDLER_SIZE,
+		},
+		{
+			.type = ION_HEAP_TYPE_CARVEOUT,
+			.id = TEGRA_ION_HEAP_VPR,
+			.name = "vpr",
+			.base = 0,
+			.size = 0,
+		},
+		{
+			.type = ION_HEAP_TYPE_IOMMU,
+			.id = TEGRA_ION_HEAP_IOMMU,
+			.name = "iommu",
+			.base = TEGRA_SMMU_BASE,
+			.size = TEGRA_SMMU_SIZE,
+			.priv = &tegra_iommu_device.dev,
+		},
+	},
+};
+
+static struct platform_device tegra_ion_device = {
+	.name = "ion-tegra",
+	.id = -1,
+	.dev = {
+		.platform_data = &tegra_ion_data,
+	},
+};
+#endif
 
 #define AC_IN_GPIO         TEGRA_GPIO_PV1
 static struct charging_img_data charging_data = {
     .ac_in_pin = AC_IN_GPIO,
+    .bl_pdev = &ast_backlight_device,
 };
 
 static struct platform_device charging_img_device = {
@@ -1910,8 +1989,12 @@ static struct platform_device charging_img_device = {
 };
 
 static struct platform_device *ast_gfx_devices[] __initdata = {
+#if defined(CONFIG_TEGRA_NVMAP)
 	&ast_nvmap_device,
-	&tegra_grhost_device,
+#endif
+#if defined(CONFIG_ION_TEGRA)
+	&tegra_ion_device,
+#endif
 	&charging_img_device,
 };
 
@@ -2015,7 +2098,7 @@ static void ast_panel_late_resume(struct early_suspend *h)
 
 	for (i = 0; i < num_registered_fb; i++)
 		fb_blank(registered_fb[i], FB_BLANK_UNBLANK);
-	tegra_gpio_enable(AST_HDMI_HPD);
+	tegra_gpio_enable(HDMI_HPD_GPIO);
 }
 #endif
 
@@ -2029,17 +2112,23 @@ int __init ast_panel_init(void){
         prev_brightness = -1;
 
         mutex_init(&lcd_lock);
-
+#if defined(CONFIG_TEGRA_NVMAP)
 	ast_carveouts[1].base = tegra_carveout_start;
 	ast_carveouts[1].size = tegra_carveout_size;
+#endif
+
+#if defined(CONFIG_ION_TEGRA)
+	tegra_ion_data.heaps[0].base = tegra_carveout_start;
+	tegra_ion_data.heaps[0].size = tegra_carveout_size;
+#endif
 
 	is_panel_init_on = true;
 
 	ast_panel_pins_request();
 
-	gpio_request(AST_HDMI_HPD, "hdmi_hpd");
-	gpio_direction_input(AST_HDMI_HPD);
-	tegra_gpio_enable(AST_HDMI_HPD);
+	gpio_request(HDMI_HPD_GPIO, "hdmi_hpd");
+	gpio_direction_input(HDMI_HPD_GPIO);
+	tegra_gpio_enable(HDMI_HPD_GPIO);
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	ast_panel_early_suspender.suspend = ast_panel_early_suspend;
@@ -2048,12 +2137,21 @@ int __init ast_panel_init(void){
 	register_early_suspend(&ast_panel_early_suspender);
 #endif
 
+#ifdef CONFIG_TEGRA_GRHOST
+	err = tegra3_register_host1x_devices();
+	if (err)
+		return err;
+#endif
+
 	err = platform_add_devices(ast_gfx_devices,
 				ARRAY_SIZE(ast_gfx_devices));
+
+#if defined(CONFIG_TEGRA_GRHOST) && defined(CONFIG_TEGRA_DC)
 	res = nvhost_get_resource_byname(&ast_disp1_device,
 					 IORESOURCE_MEM, "fbmem");
 	res->start = tegra_fb_start;
 	res->end = tegra_fb_start + tegra_fb_size - 1;
+#endif
 
 	/* Copy the bootloader fb to the fb. */
 	tegra_move_framebuffer(tegra_fb_start, tegra_bootloader_fb_start,
@@ -2138,7 +2236,6 @@ static int ast_panel_spi_probe(struct spi_device *spi)
 		platform_set_drvdata(&ast_backlight_device, bl);
 	}
 
-	bl_dev = bl;
 	#endif
 
 	return 0;

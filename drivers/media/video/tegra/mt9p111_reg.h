@@ -1,5 +1,5 @@
-#ifndef ___MT9P111_REG_H__
-#define ___MT9P111_REG_H__
+#ifndef __MT9P111_REG_H__
+#define __MT9P111_REG_H__
 
 /* max counter for retry I2C access */
 #define MT9P111_MAX_WAITMS              1
@@ -44,7 +44,7 @@ enum {
 enum {
 	MT9P111_FOCUS_INFINITY = 0,
 	MT9P111_FOCUS_MACRO = 1,
-	MT9P111_FOCUS_AUTO = 2
+	MT9P111_FOCUS_AUTO = 2,
 };
 
 enum {
@@ -69,6 +69,8 @@ struct mt9p111_reg {
 
 struct mt9p111_info {
 	int mode;
+	unsigned int af_mode;
+	int touch_active;
 	struct mutex lock;
 	struct i2c_client *i2c_client;
 	struct mt9p111_platform_data *pdata;
@@ -76,7 +78,13 @@ struct mt9p111_info {
 
 struct mt9p111_iso {
 	int value;
-	int fdzone;
+	int again;
+};
+
+static struct mt9p111_reg seq_refresh[] = {
+{MT9P111_REG8, 0x8404, 0x06},		/* SEQ_CMD, Refresh Mode */
+{MT9P111_POLL8, 0x8404, 0x00, 0xFF},
+{MT9P111_TABLE_END, 0, 0}
 };
 
 static struct mt9p111_reg focus_trigger[] = {
@@ -444,12 +452,12 @@ static struct mt9p111_reg exposure_minus_2[] = {
 static struct mt9p111_reg flash_on[] = {
 {MT9P111_REG16, 0x098E, 0x8423},	/* LOGICAL_ADDRESS_ACCESS */
 {MT9P111_REG8, 0x8423, 0x04},		/* SEQ_STATE_CFG_2_FS */
-{MT9P111_REG8, 0x843B, 0x04},		/* SEQ_STATE_CFG_5_FS */
 {MT9P111_REG8, 0x8424, 0x06},		/* SEQ_STATE_CFG_2_MAX_FRAME_CNT */
+{MT9P111_REG8, 0x843B, 0x04},		/* SEQ_STATE_CFG_5_FS */
 {MT9P111_REG8, 0x841E, 0x00},		/* SEQ_STATE_CFG_2_AE */
 {MT9P111_REG8, 0x8420, 0x00},		/* SEQ_STATE_CFG_2_AWB */
-{MT9P111_REG8, 0xC058, 0x02},		/* FLASH_HW_UNIT_2_MODE */
 {MT9P111_REG8, 0xC057, 0x0F},		/* FLASH_HW_UNIT_2_BRIGHTNESS_TH */
+{MT9P111_REG8, 0xC058, 0x02},		/* FLASH_HW_UNIT_2_MODE */
 {MT9P111_REG16, 0xFC00, 0x0004},	/* FS_ALGO */
 {MT9P111_REG8, 0x8404, 0x05},		/* SEQ_CMD */
 {MT9P111_POLL8, 0x8404, 0x00, 0xFF},
@@ -459,8 +467,8 @@ static struct mt9p111_reg flash_on[] = {
 static struct mt9p111_reg flash_off[] = {
 {MT9P111_REG16, 0x098E, 0x8423},	/* LOGICAL_ADDRESS_ACCESS */
 {MT9P111_REG8, 0x8423, 0x00},		/* SEQ_STATE_CFG_2_FS */
-{MT9P111_REG8, 0x843B, 0x00},		/* SEQ_STATE_CFG_5_FS */
 {MT9P111_REG8, 0x8424, 0x00},		/* SEQ_STATE_CFG_2_MAX_FRAME_CNT */
+{MT9P111_REG8, 0x843B, 0x00},		/* SEQ_STATE_CFG_5_FS */
 {MT9P111_REG8, 0x841E, 0x02},		/* SEQ_STATE_CFG_2_AE */
 {MT9P111_REG8, 0x8420, 0x02},		/* SEQ_STATE_CFG_2_AWB */
 {MT9P111_REG8, 0xC058, 0x00},		/* FLASH_HW_UNIT_2_MODE */
@@ -473,12 +481,12 @@ static struct mt9p111_reg flash_off[] = {
 static struct mt9p111_reg flash_auto[] = {
 {MT9P111_REG16, 0x098E, 0x8423},	/* LOGICAL_ADDRESS_ACCESS */
 {MT9P111_REG8, 0x8423, 0x04},		/* SEQ_STATE_CFG_2_FS */
-{MT9P111_REG8, 0x843B, 0x04},		/* SEQ_STATE_CFG_5_FS */
 {MT9P111_REG8, 0x8424, 0x06},		/* SEQ_STATE_CFG_2_MAX_FRAME_CNT */
+{MT9P111_REG8, 0x843B, 0x04},		/* SEQ_STATE_CFG_5_FS */
 {MT9P111_REG8, 0x841E, 0x02},		/* SEQ_STATE_CFG_2_AE */
 {MT9P111_REG8, 0x8420, 0x02},		/* SEQ_STATE_CFG_2_AWB */
-{MT9P111_REG8, 0xC058, 0x02},		/* FLASH_HW_UNIT_2_MODE */
 {MT9P111_REG8, 0xC057, 0x04},		/* FLASH_HW_UNIT_2_BRIGHTNESS_TH */
+{MT9P111_REG8, 0xC058, 0x02},		/* FLASH_HW_UNIT_2_MODE */
 {MT9P111_REG16, 0xFC00, 0x0004},	/* FS_ALGO */
 {MT9P111_REG8, 0x8404, 0x05},		/* SEQ_CMD */
 {MT9P111_POLL8, 0x8404, 0x00, 0xFF},
@@ -539,7 +547,7 @@ static struct mt9p111_reg mode_capture[] = {
 {MT9P111_REG8, 0xC05A, 0x00},		/* Reset flash status to 0x00 */
 {MT9P111_REG8, 0x843C, 0xFF},		/* SEQ_STATE_CFG_5_MAX_FRAME_CNT */
 {MT9P111_REG8, 0x8404, 0x02},		/* SEQ_CMD */
-{MT9P111_POLL8, 0x8405, 0x06, 0xFE},	/* Wait Enter Capture(0x06) or Capture(0x07) */
+{MT9P111_POLL8, 0x8405, 0x06, 0xFE},	/* Wait Capture(0x07) */
 {MT9P111_TABLE_END, 0, 0}
 };
 
@@ -547,7 +555,7 @@ static struct mt9p111_reg mode_preview[] = {
 {MT9P111_REG16, 0x098E, 0x1000},	/* LOGICAL_ADDRESS_ACCESS [IO_NV_MEM_COMMAND] */
 {MT9P111_POLL8, 0x8405, 0x03, 0xFB},	/* Wait Preview(0x03) or Capture(0x07) */
 {MT9P111_REG8, 0x8404, 0x01},		/* SEQ_CMD */
-{MT9P111_POLL8, 0x8405, 0x02, 0xFE},	/* Wait Enter Preview(0x02) or Preview(0x03) */
+{MT9P111_POLL8, 0x8405, 0x03, 0xFF},	/* Wait Preview(0x03) */
 {MT9P111_TABLE_END, 0, 0}
 };
 
@@ -1386,7 +1394,7 @@ static struct mt9p111_reg mode_init_start[] = {
 {MT9P111_REG16, 0xA010, 0x0134},	/* fd_min_expected50hz_flicker_period = 308 */
 {MT9P111_REG16, 0xA012, 0x0148},	/* fd_max_expected50hz_flicker_period = 328 */
 {MT9P111_REG16, 0xA014, 0x00FF},	/* fd_min_expected60hz_flicker_period = 255 */
-{MT9P111_REG16, 0xA016, 0x0127},	/* fd_max_expected60hz_flicker_period = 295 */
+{MT9P111_REG16, 0xA016, 0x0113},	/* fd_max_expected60hz_flicker_period = 275 */
 {MT9P111_REG16, 0xA018, 0x013E},	/* fd_expected50hz_flicker_period (A) = 318 */
 {MT9P111_REG16, 0xA01A, 0x0098},	/* fd_expected50hz_flicker_period (B) = 152 */
 {MT9P111_REG16, 0xA01C, 0x0109},	/* fd_expected60hz_flicker_period (A) = 265 */
@@ -1498,8 +1506,8 @@ static struct mt9p111_reg mode_init_end[] = {
 {MT9P111_REG8, 0xC8BD, 0x08},		/* CAM_OUTPUT_0_JPEG_QSCALE_1 */
 /* SYS settings */
 {MT9P111_REG16, 0x326E, 0x0006},	/* LOW_PASS_YUV_FILTER */
-{MT9P111_REG16, 0x35A4, 0x0596},	/* BRIGHT_COLOR_KILL_CONTROLS */
 {MT9P111_REG16, 0x35A2, 0x0094},	/* DARK_COLOR_KILL_CONTROLS */
+{MT9P111_REG16, 0x35A4, 0x0596},	/* BRIGHT_COLOR_KILL_CONTROLS */
 {MT9P111_REG8, 0xDC35, 0x04},		/* SYS_UV_COLOR_BOOST */
 {MT9P111_REG8, 0xDC36, 0x23},		/* SYS_DARK_COLOR_KILL */
 {MT9P111_REG8, 0xDC37, 0x62},		/* SYS_BRIGHT_COLORKILL */
@@ -1565,8 +1573,8 @@ static struct mt9p111_reg mode_init_end[] = {
 {MT9P111_REG8, 0xB801, 0xE0},		/* STAT_MODE */
 {MT9P111_REG8, 0xB862, 0x04},		/* STAT_BMTRACKING_SPEED */
 /* AE */
-{MT9P111_REG8, 0xB829, 0x02},		/* STAT_LL_BRIGHTNESS_METRIC_DIVISOR */
 {MT9P111_REG8, 0xB863, 0x02},		/* STAT_BM_MUL */
+{MT9P111_REG8, 0xB829, 0x02},		/* STAT_LL_BRIGHTNESS_METRIC_DIVISOR */
 {MT9P111_REG8, 0xB827, 0x0F},		/* STAT_AE_EV_SHIFT */
 {MT9P111_REG8, 0xB820, 0x26},		/* STAT_AE_WINDOW_POS_X */
 {MT9P111_REG8, 0xB821, 0x26},		/* STAT_AE_WINDOW_POS_Y */
@@ -1614,10 +1622,10 @@ static struct mt9p111_reg mode_init_end[] = {
 {MT9P111_REG8, 0xBCB2, 0x20},		/* LL_CDC_DARK_CLUS_SLOPE */
 {MT9P111_REG8, 0xBCB3, 0x3A},		/* LL_CDC_DARK_CLUS_SATUR */
 {MT9P111_REG8, 0xBCB4, 0x39},		/* LL_CDC_BRIGHT_CLUS_LO_LIGHT_SLOPE */
-{MT9P111_REG8, 0xBCB7, 0x39},		/* LL_CDC_BRIGHT_CLUS_LO_LIGHT_SATUR */
 {MT9P111_REG8, 0xBCB5, 0x20},		/* LL_CDC_BRIGHT_CLUS_MID_LIGHT_SLOPE */
-{MT9P111_REG8, 0xBCB8, 0x3A},		/* LL_CDC_BRIGHT_CLUS_MID_LIGHT_SATUR */
 {MT9P111_REG8, 0xBCB6, 0x80},		/* LL_CDC_BRIGHT_CLUS_HI_LIGHT_SLOPE */
+{MT9P111_REG8, 0xBCB7, 0x39},		/* LL_CDC_BRIGHT_CLUS_LO_LIGHT_SATUR */
+{MT9P111_REG8, 0xBCB8, 0x3A},		/* LL_CDC_BRIGHT_CLUS_MID_LIGHT_SATUR */
 {MT9P111_REG8, 0xBCB9, 0x24},		/* LL_CDC_BRIGHT_CLUS_HI_LIGHT_SATUR */
 {MT9P111_REG16, 0xBCAA, 0x03E8},	/* LL_CDC_THR_ADJ_START_POS */
 {MT9P111_REG16, 0xBCAC, 0x012C},	/* LL_CDC_THR_ADJ_MID_POS */
@@ -1659,7 +1667,7 @@ static struct mt9p111_reg mode_init_end[] = {
 {MT9P111_REG8, 0xBCC5, 0x0B},		/* LL_SFFB_THSTOP */
 {MT9P111_REG16, 0xBCBA, 0x0009},	/* LL_SFFB_CONFIG */
 /* FTB */
-{MT9P111_REG16, 0xBC14, 0xFFFD},	/* LL_GAMMA_FADE_TO_BLACK_START_POS */
+{MT9P111_REG16, 0xBC14, 0xFFFF},	/* LL_GAMMA_FADE_TO_BLACK_START_POS */
 {MT9P111_REG16, 0xBC16, 0xFFFF},	/* LL_GAMMA_FADE_TO_BLACK_END_POS */
 /* Aperture preference */
 {MT9P111_REG16, 0xBC66, 0x0154},	/* LL_START_APERTURE_GM */
@@ -1694,7 +1702,6 @@ static struct mt9p111_reg mode_init_end[] = {
 {MT9P111_REG8, 0xBCCB, 0x00},		/* LL_SFFB_TRANSITION_STOP */
 /* SFFB slope zero enable */
 {MT9P111_REG8, 0xBCE6, 0x03},		/* LL_SFFB_ZERO_ENABLE */
-{MT9P111_REG8, 0xBCE6, 0x03},		/* LL_SFFB_ZERO_ENABLE */
 /* AE preference */
 {MT9P111_REG8, 0xA410, 0x04},		/* AE_RULE_TARGET_AE_6 */
 {MT9P111_REG8, 0xA411, 0x06},		/* AE_RULE_TARGET_AE_7 */
@@ -1714,20 +1721,18 @@ static struct mt9p111_reg mode_init_end[] = {
 {MT9P111_REG8, 0x8404, 0x05},		/* SEQ_CMD */
 {MT9P111_REG16, 0xC05C, 0x0080},	/* FLASH_HW_UNIT_2_OPTIONS */
 {MT9P111_REG16, 0xC060, 0xA980},	/* FLASH_HW_UNIT_2_MAX_TIME_STROBE */
-{MT9P111_REG16, 0xC06C, 0x0000},	/* FLASH_HW_UNIT_2_N_PULSES */
 {MT9P111_REG8, 0xC057, 0x04},		/* FLASH_HW_UNIT_2_BRIGHTNESS_TH */
 {MT9P111_REG8, 0xC058, 0x02},		/* FLASH_HW_UNIT_2_MODE */
 {MT9P111_REG8, 0xC059, 0x03},		/* FLASH_HW_UNIT_2_U_ALGO */
 {MT9P111_REG8, 0xC062, 0x0C},		/* FLASH_HW_UNIT_2_MAX_TIME_STROBE_SCALE */
+{MT9P111_REG16, 0xC06C, 0x0000},	/* FLASH_HW_UNIT_2_N_PULSES */
 {MT9P111_REG16, 0xC06E, 0x2400},	/* FLASH_HW_UNIT_2_F_EXPOSURE */
-{MT9P111_REG16, 0xFC00, 0x0004},	/* FS_ALGO */
-{MT9P111_REG8, 0xFC26, 0x40},		/* FS_POWER_RATIO */
 {MT9P111_REG16, 0xFC0E, 0x0020},	/* FS_OPTIONS */
 {MT9P111_REG8, 0xFC24, 0x4B},		/* FS_AWB_R2G_RATIO */
 {MT9P111_REG8, 0xFC25, 0x32},		/* FS_AWB_B2G_RATIO */
+{MT9P111_REG8, 0xFC26, 0x40},		/* FS_POWER_RATIO */
 {MT9P111_REG8, 0xFC11, 0x40},		/* FS_DECR_EXPOSURE */
 {MT9P111_REG8, 0x8404, 0x05},		/* SEQ_CMD */
-{MT9P111_WAIT_MS, 0, 100},
 {MT9P111_TABLE_END, 0, 0}
 };
 
@@ -1738,11 +1743,11 @@ static struct mt9p111_reg *mode_table[] = {
 
 static struct mt9p111_iso iso_table[] = {
 	{0, 0},
-	{100, 0x04},
-	{200, 0x06},
-	{400, 0x09},
-	{800, 0x0C},
-	{1600, 0x18},
+	{100, 0x0065},
+	{200, 0x00CA},
+	{400, 0x012F},
+	{800, 0x0194},
+	{1600, 0x01FC},
 	{-1, -1}
 };
 

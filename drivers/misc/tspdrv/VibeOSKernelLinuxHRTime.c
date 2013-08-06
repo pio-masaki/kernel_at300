@@ -6,7 +6,7 @@
 ** Description: 
 **     High Resolution Time helper functions for Linux.
 **
-** Portions Copyright (c) 2010-2011 Immersion Corporation. All Rights Reserved. 
+** Portions Copyright (c) 2010-2012 Immersion Corporation. All Rights Reserved. 
 **
 ** This file contains Original Code and/or Modifications of Original Code 
 ** as defined in and that are subject to the GNU Public License v2 - 
@@ -130,8 +130,7 @@ static void VibeOSKernelLinuxStartTimer(void)
     }
     else
     {
-        int res;
-
+        int res;  
         /* 
         ** Use interruptible version of down to be safe 
         ** (try to not being stuck here if the semaphore is not freed for any reason)
@@ -139,11 +138,32 @@ static void VibeOSKernelLinuxStartTimer(void)
         res = down_interruptible(&g_hSemaphore);  /* wait for the semaphore to be freed by the timer */
         if (res != 0)
         {
-            DbgOut((KERN_INFO "VibeOSKernelLinuxStartTimer: down_interruptible interrupted by a signal.\n"));
+            DbgOut((DBL_INFO, "VibeOSKernelLinuxStartTimer: down_interruptible interrupted by a signal.\n"));
         }
     }
-
     VibeOSKernelProcessData(NULL);
+    /* 
+    ** Because of possible NACK handling, the  VibeOSKernelProcessData() call above could take more than
+    ** 5 ms on some piezo devices that are buffering output samples; when this happens, the timer
+    ** interrupt will release the g_hSemaphore while VibeOSKernelProcessData is executing and the player
+    ** will immediately send the new packet to the SPI layer when VibeOSKernelProcessData exits, which
+    ** could cause another NACK right away. To avoid that, we'll create a small delay if the semaphore
+    ** was released when VibeOSKernelProcessData exits, by acquiring the mutex again and waiting for
+    ** the timer to release it.
+    */
+#if defined(NUM_EXTRA_BUFFERS) && (NUM_EXTRA_BUFFERS)
+    if (g_bTimerStarted && !VibeSemIsLocked(&g_hSemaphore))
+    {
+        int res;
+
+        res = down_interruptible(&g_hSemaphore);
+
+        if (res != 0)
+        {
+            DbgOut((DBL_INFO, "VibeOSKernelLinuxStartTimer: down_interruptible interrupted by a signal.\n"));
+        }
+    }
+#endif
 }
 
 static void VibeOSKernelLinuxStopTimer(void)

@@ -28,6 +28,7 @@
 #include <mach/irqs.h>
 #include <mach/iomap.h>
 #include <mach/sdhci.h>
+#include <mach/io_dpd.h>
 
 #include "gpio-names.h"
 #include "board.h"
@@ -36,8 +37,6 @@
 
 DEFINE_MUTEX(wireless_power_lock);
 
-#define AST_WLAN_RST	TEGRA_GPIO_PD3
-#define AST_WLAN_WOW	TEGRA_GPIO_PO4
 static struct regulator *ast_wifi_1v8_vdd = NULL;
 static struct regulator *ast_wifi_3v3_vdd = NULL;
 static unsigned int wireless_regulator_use_count_wifi = 0;
@@ -63,8 +62,8 @@ static struct wifi_platform_data ast_wifi_control = {
 static struct resource wifi_resource[] = {
 	[0] = {
 		.name	= "bcm4329_wlan_irq",
-		.start	= TEGRA_GPIO_TO_IRQ(TEGRA_GPIO_PO4),
-		.end	= TEGRA_GPIO_TO_IRQ(TEGRA_GPIO_PO4),
+		.start	= TEGRA_GPIO_TO_IRQ(WLAN_WOW_GPIO),
+		.end	= TEGRA_GPIO_TO_IRQ(WLAN_WOW_GPIO),
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHLEVEL | IORESOURCE_IRQ_SHAREABLE,
 	},
 };
@@ -142,8 +141,9 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data2 = {
 	.cd_gpio = -1,
 	.wp_gpio = -1,
 	.power_gpio = -1,
-/*	.tap_delay = 6,
-	.is_voltage_switch_supported = false,
+	.tap_delay = 0x0F,
+	.ddr_clk_limit = 41000000,
+/*	.is_voltage_switch_supported = false,
 	.vdd_rail_name = NULL,
 	.slot_rail_name = NULL,
 	.vdd_max_uv = -1,
@@ -153,11 +153,12 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data2 = {
 };
 
 static struct tegra_sdhci_platform_data tegra_sdhci_platform_data0 = {
-	.cd_gpio = AST_SD_CD,
-	.wp_gpio = AST_SD_WP,
+	.cd_gpio = SD_CD_GPIO,
+	.wp_gpio = SD_WP_GPIO,
 	.power_gpio = -1,
-/*	.tap_delay = 6,
-	.is_voltage_switch_supported = true,
+	.tap_delay = 0x0F,
+	.ddr_clk_limit = 41000000,
+/*	.is_voltage_switch_supported = true,
 	.vdd_rail_name = "vddio_sdmmc1",
 	.slot_rail_name = "vddio_sd_slot",
 	.vdd_max_uv = 3320000,
@@ -170,13 +171,13 @@ static struct tegra_sdhci_platform_data tegra_sdhci_platform_data3 = {
 	.cd_gpio = -1,
 	.wp_gpio = -1,
 	.power_gpio = -1,
-    .is_8bit = 1,
-    .tap_delay = 0x0F,
+	.is_8bit = 1,
+	.tap_delay = 0x0F,
+	.ddr_clk_limit = 41000000,
 	.mmc_data = {
 		.built_in = 1,
 	}
-/*	.tap_delay = 6,
-	.is_voltage_switch_supported = false,
+/*	.is_voltage_switch_supported = false,
 	.vdd_rail_name = NULL,
 	.slot_rail_name = NULL,
 	.vdd_max_uv = -1,
@@ -361,11 +362,22 @@ int  enable_wireless_regulator(int enable, int power_type)
 
 static int ast_wifi_power(int on)
 {
+	struct tegra_io_dpd *sd_dpd;
+
 	pr_err("%s: %d\n", __func__, on);
+
+#if defined(CONFIG_MACH_AVALON) || defined(CONFIG_MACH_SPHINX)
+	sd_dpd = tegra_io_dpd_get(&tegra_sdhci_device2.dev);
+	if (sd_dpd) {
+		mutex_lock(&sd_dpd->delay_lock);
+		tegra_io_dpd_disable(sd_dpd);
+		mutex_unlock(&sd_dpd->delay_lock);
+	}
+#endif
 
 	switch (on) {
 	case 0:
-		gpio_set_value(AST_WLAN_RST, on);
+		gpio_set_value(WLAN_RST_GPIO, on);
 		mdelay(200);
 		if (enable_wireless_regulator(0,WIFI_POWER) == -1)
 			printk(KERN_ERR "%s(): disable regulator failed!\n", __func__);
@@ -373,23 +385,32 @@ static int ast_wifi_power(int on)
 	case 1:
 		if (enable_wireless_regulator(1,WIFI_POWER) == -1)
 			printk(KERN_ERR "%s(): enable regulator failed!\n", __func__);
-		gpio_set_value(AST_WLAN_RST, on);
+		gpio_set_value(WLAN_RST_GPIO, on);
 		mdelay(200);
 		break;
 	case 2:
 		/* Set Wi-Fi at RESET OFF state */
-		gpio_set_value(AST_WLAN_RST, 0);
+		gpio_set_value(WLAN_RST_GPIO, 0);
 		mdelay(200);
 		break;
 	case 3:
 		/* Set Wi-Fi at RESET ON state */
-		gpio_set_value(AST_WLAN_RST, 1);
+		gpio_set_value(WLAN_RST_GPIO, 1);
 		mdelay(200);
 		break;
 	default:
 		pr_err("%s: Wrong power command %d\n", __func__, on);
 		break;
 	}
+
+#if defined(CONFIG_MACH_AVALON) || defined(CONFIG_MACH_SPHINX)
+	if (sd_dpd) {
+		mutex_lock(&sd_dpd->delay_lock);
+		tegra_io_dpd_enable(sd_dpd);
+		mutex_unlock(&sd_dpd->delay_lock);
+	}
+#endif
+
 	return 0;
 }
 
@@ -404,21 +425,21 @@ static int __init ast_wifi_init(void)
 {
 	int rc;
 	pr_err("%s: Enter\n", __func__);
-	rc = gpio_request(AST_WLAN_RST, "wlan_rst");
+	rc = gpio_request(WLAN_RST_GPIO, "wlan_rst");
 	if (rc)
 		pr_err("WLAN_RST gpio request failed:%d\n", rc);
-	rc = gpio_request(AST_WLAN_WOW, "bcmsdh_sdmmc");
+	rc = gpio_request(WLAN_WOW_GPIO, "bcmsdh_sdmmc");
 	if (rc)
 		pr_err("WLAN_WOW gpio request failed:%d\n", rc);
-	gpio_direction_output(AST_WLAN_RST, 0);
+	gpio_direction_output(WLAN_RST_GPIO, 0);
 	if (rc)
 		pr_err("WLAN_RST gpio direction configuration failed:%d\n", rc);
-	rc = gpio_direction_input(AST_WLAN_WOW);
+	rc = gpio_direction_input(WLAN_WOW_GPIO);
 	if (rc)
 		pr_err("WLAN_WOW gpio direction configuration failed:%d\n", rc);
 
-	tegra_gpio_enable(AST_WLAN_RST);
-	tegra_gpio_enable(AST_WLAN_WOW);
+	tegra_gpio_enable(WLAN_RST_GPIO);
+	tegra_gpio_enable(WLAN_WOW_GPIO);
 	platform_device_register(&ast_wifi_device);
 	return 0;
 }

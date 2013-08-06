@@ -15,17 +15,16 @@
 #define MT9D115_IOCTL_SET_FPS           _IOW('o', 7, unsigned int)
 #define MT9D115_IOCTL_GET_ISO           _IOW('o', 8, unsigned int)
 
-
 struct mt9d115_mode {
 	int xres;
 	int yres;
 };
 
 struct mt9d115_rect{
-    int x;
-    int y;
-    int width;
-    int height;
+	int x;
+	int y;
+	int width;
+	int height;
 };
 
 #ifdef __KERNEL__

@@ -192,7 +192,7 @@ struct spi_board_info rm31080a_spi_board[1] = {
 	 .modalias = "rm_ts_spidev",
 	 .bus_num = 0,
 	 .chip_select = 0,
-	 .max_speed_hz = 18 * 1000 * 1000,
+	 .max_speed_hz = 13 * 1000 * 1000,
 	 .mode = SPI_MODE_0,
 	 .platform_data = &rm31080ts_data,
 	 },
@@ -220,15 +220,15 @@ int __init touch_init_raydium(int irq_gpio, int reset_gpio, int platform)
 	switch (platform) {
 	case 0:
 		pr_info("Raydium Kai PCB based touch init\n");
-		rm31080ts_data.config = rm31080_config_kai_pcb;
+		rm31080ts_data.config = (char *) rm31080_config_kai_pcb;
 		break;
 	case 1:
 		pr_info("Raydium Kai On-Board touch init\n");
-		rm31080ts_data.config = rm31080_config_kai_mainboard;
+		rm31080ts_data.config = (char *) rm31080_config_kai_mainboard;
 		break;
 	case 2:
 		pr_info("Raydium cardhu touch init\n");
-		rm31080ts_data.config = rm31080_config_cardhu;
+		rm31080ts_data.config = (char *) rm31080_config_cardhu;
 		break;
 	default:
 		pr_err("touch_id error, no touch\n");

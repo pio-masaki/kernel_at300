@@ -1,7 +1,7 @@
 /*
  * drivers/video/tegra/dc/dc_sysfs.c
  *
- * Copyright (c) 2011, NVIDIA Corporation.
+ * Copyright (c) 2011-2012, NVIDIA CORPORATION, All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,6 +18,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
+#include <linux/fb.h>
 #include <linux/platform_device.h>
 #include <linux/kernel.h>
 
@@ -27,6 +28,9 @@
 #include "dc_reg.h"
 #include "dc_priv.h"
 #include "nvsd.h"
+#include "hdmi.h" /* added by Levi for DVI */
+
+// TSB_MMP is defined in "kernel/arch/arm/mach-tegra/include/mach/dc.h"
 
 static ssize_t mode_show(struct device *device,
 	struct device_attribute *attr, char *buf)
@@ -282,120 +286,111 @@ static ssize_t mode_3d_store(struct device *dev,
 static DEVICE_ATTR(stereo_mode,
 	S_IRUGO|S_IWUSR, mode_3d_show, mode_3d_store);
 
+#ifdef TSB_MMP
 static ssize_t gamma_show(struct device *dev,
-	struct device_attribute *attr, char *buf)
+       struct device_attribute *attr, char *buf)
 {
 	struct nvhost_device *ndev = to_nvhost_device(dev);
-	struct tegra_dc *dc = nvhost_get_drvdata(ndev);
-	struct tegra_dc_out *dc_out = dc->out;
-	/* return snprintf(buf, PAGE_SIZE, "%d\n", dc_out->gamma); */
-	return snprintf(buf, PAGE_SIZE, "%d %d %d %d\n", dc_out->gamma, dc_out->r_ratio, dc_out->g_ratio, dc_out->b_ratio);
+    struct tegra_dc *dc = nvhost_get_drvdata(ndev);
+    struct tegra_dc_out *dc_out = dc->out;
+    /* return snprintf(buf, PAGE_SIZE, "%d\n", dc_out->gamma); */
+    return snprintf(buf, PAGE_SIZE, "%d %d %d %d\n", dc_out->gamma, dc_out->r_ratio, dc_out->g_ratio, dc_out->b_ratio);
 }
 
 static ssize_t gamma_store(struct device *dev,
-	struct device_attribute *attr, const char *buf, size_t cnt)
+       struct device_attribute *attr, const char *buf, size_t cnt)
 {
+
 	struct nvhost_device *ndev = to_nvhost_device(dev);
 	struct tegra_dc *dc = nvhost_get_drvdata(ndev);
 	int gamma_value;
-    int r_ratio, g_ratio, b_ratio;
+	int r_ratio, g_ratio, b_ratio;
 
-	if (!dc->enabled) {
+    if (!dc->enabled) {
 		/* dev_err(&dc->ndev->dev, "Failed to get dc.\n"); */
-		return -EFAULT;
+        return -EFAULT;
 	}
 
-	/* if (sscanf(buf, "%d", &gamma_value) != 1) { */
-	if (sscanf(buf, "%d%d%d%d", &gamma_value, &r_ratio, &g_ratio, &b_ratio) != 4) {
-		pr_err("Invalid property value for gamma. sscanf\n");
-		return -EINVAL;
+    /* if (sscanf(buf, "%d", &gamma_value) != 1) { */
+    if (sscanf(buf, "%d%d%d%d", &gamma_value, &r_ratio, &g_ratio, &b_ratio) != 4) {
+    	pr_err("Invalid property value for gamma. sscanf\n");
+        return -EINVAL;
 	}
 
-	/* if (tegra_dc_store_gamma(dc, gamma_value)){ */
-	if (tegra_dc_store_gamma(dc, gamma_value, r_ratio, g_ratio, b_ratio)){
-		pr_err("Invalid property value for gamma. tegra_dc_store_gamma\n");
-		return -EINVAL;
-	}
-// for mmp
-    /* dev_info(&dc->ndev->dev, "mmp:sysfs gamma = %d rgb=%d:%d:%d\n", gamma_value, r_ratio, g_ratio, b_ratio); */
-//
+    /* if (tegra_dc_store_gamma(dc, gamma_value)){ */
+    if (tegra_dc_store_gamma(dc, gamma_value, r_ratio, g_ratio, b_ratio)){
+    	pr_err("Invalid property value for gamma. tegra_dc_store_gamma\n");
+        return -EINVAL;
+    }
+	
+	// for mmp
+  	/* dev_info(&dc->ndev->dev, "mmp:sysfs gamma = %d rgb=%d:%d:%d\n", gamma_value, r_ratio, g_ratio, b_	ratio); */
+	//
+
 	return cnt;
 }
 
-static DEVICE_ATTR(gamma,
-	S_IRUGO|S_IWUSR, gamma_show, gamma_store);
+static DEVICE_ATTR(gamma, S_IRUGO|S_IWUSR, gamma_show, gamma_store);
 
-static ssize_t dvcontrol_show(struct device *dev,
+#endif // TSB_MMP
+
+static ssize_t nvdps_show(struct device *device,
 	struct device_attribute *attr, char *buf)
 {
-	struct nvhost_device *ndev = to_nvhost_device(dev);
+	int refresh_rate;
+	struct nvhost_device *ndev = to_nvhost_device(device);
 	struct tegra_dc *dc = nvhost_get_drvdata(ndev);
-	struct tegra_dc_out *dc_out = dc->out;
-	return snprintf(buf, PAGE_SIZE, "%d\n", dc_out->dvcontrol);
+
+	refresh_rate = tegra_fb_get_mode(dc);
+	return snprintf(buf, PAGE_SIZE, "%d\n", refresh_rate);
 }
 
-static ssize_t dvcontrol_store(struct device *dev,
-	struct device_attribute *attr, const char *buf, size_t cnt)
+
+static ssize_t nvdps_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct nvhost_device *ndev = to_nvhost_device(dev);
 	struct tegra_dc *dc = nvhost_get_drvdata(ndev);
-	int dvcontrol_value;
+	int refresh_rate;
+	int e;
 
-	if (!dc->enabled) {
-		/* dev_err(&dc->ndev->dev, "Failed to get dc.\n"); */
-		return -EFAULT;
-	}
+	e = kstrtoint(buf, 10, &refresh_rate);
+	if (e)
+		return e;
+	e = tegra_fb_set_mode(dc, refresh_rate);
 
-	if (sscanf(buf, "%d", &dvcontrol_value) != 1) {
-		pr_err("Invalid property value for dvcontrol. sscanf\n");
-		return -EINVAL;
-	}
-
-	if (tegra_dc_store_dvcontrol(dc, dvcontrol_value)){
-		pr_err("Invalid property value for dvcontrol. tegra_dc_store_dvcontrol\n");
-		return -EINVAL;
-	}
-	return cnt;
+	return count;
 }
 
-static DEVICE_ATTR(dvcontrol,
-	S_IRUGO|S_IWUSR, dvcontrol_show, dvcontrol_store);
+static DEVICE_ATTR(nvdps, S_IRUGO|S_IWUSR, nvdps_show, nvdps_store);
 
-static ssize_t csc_show(struct device *dev,
+/* added by Levi for DVI */
+static ssize_t modelname_show(struct device *device,
 	struct device_attribute *attr, char *buf)
 {
-	struct nvhost_device *ndev = to_nvhost_device(dev);
+	struct nvhost_device *ndev = to_nvhost_device(device);
 	struct tegra_dc *dc = nvhost_get_drvdata(ndev);
-	struct tegra_dc_out *dc_out = dc->out;
-	return snprintf(buf, PAGE_SIZE, "%d\n", dc_out->csc);
+
+	if(!dc->enabled)
+		return 0;
+
+	return snprintf(buf, 16, "%s\n", tegra_dc_get_model_name(dc));
 }
 
-static ssize_t csc_store(struct device *dev,
-	struct device_attribute *attr, const char *buf, size_t cnt)
+static DEVICE_ATTR(modelname, S_IRUGO, modelname_show, NULL);
+
+static ssize_t dvi_show(struct device *device,
+	struct device_attribute *attr, char *buf)
 {
-	struct nvhost_device *ndev = to_nvhost_device(dev);
+	struct nvhost_device *ndev = to_nvhost_device(device);
 	struct tegra_dc *dc = nvhost_get_drvdata(ndev);
-	int csc_value;
 
-	if (!dc->enabled) {
-		/* dev_err(&dc->ndev->dev, "Failed to get dc.\n"); */
-		return -EFAULT;
-	}
+	if(!dc->enabled)
+		return  snprintf(buf, sizeof(int), "0\n");
 
-	if (sscanf(buf, "%d", &csc_value) != 1) {
-		pr_err("Invalid property value for csc. sscanf\n");
-		return -EINVAL;
-	}
-
-	if (tegra_dc_store_csc(dc, csc_value)){
-		pr_err("Invalid property value for csc. tegra_dc_store_csc\n");
-		return -EINVAL;
-	}
-	return cnt;
+	return snprintf(buf, sizeof(int), "%d\n", tegra_dc_get_dvi(dc));
 }
-
-static DEVICE_ATTR(csc,
-	S_IRUGO|S_IWUSR, csc_show, csc_store);
+static DEVICE_ATTR(dvi, S_IRUGO, dvi_show, NULL);
 
 void __devexit tegra_dc_remove_sysfs(struct device *dev)
 {
@@ -404,12 +399,16 @@ void __devexit tegra_dc_remove_sysfs(struct device *dev)
 	struct tegra_dc_sd_settings *sd_settings = dc->out->sd_settings;
 
 	device_remove_file(dev, &dev_attr_mode);
+	device_remove_file(dev, &dev_attr_nvdps);
 	device_remove_file(dev, &dev_attr_enable);
 	device_remove_file(dev, &dev_attr_stats_enable);
 	device_remove_file(dev, &dev_attr_crc_checksum_latched);
-	device_remove_file(dev, &dev_attr_gamma);
-	device_remove_file(dev, &dev_attr_dvcontrol);
-	device_remove_file(dev, &dev_attr_csc);
+	/* added by Levi for DVI */
+	device_remove_file(dev, &dev_attr_modelname);
+	device_remove_file(dev, &dev_attr_dvi);
+#ifdef TSB_MMP
+    device_remove_file(dev, &dev_attr_gamma);
+#endif
 
 	if (dc->out->stereo) {
 		device_remove_file(dev, &dev_attr_stereo_orientation);
@@ -428,12 +427,16 @@ void tegra_dc_create_sysfs(struct device *dev)
 	int error = 0;
 
 	error |= device_create_file(dev, &dev_attr_mode);
+	error |= device_create_file(dev, &dev_attr_nvdps);
 	error |= device_create_file(dev, &dev_attr_enable);
 	error |= device_create_file(dev, &dev_attr_stats_enable);
 	error |= device_create_file(dev, &dev_attr_crc_checksum_latched);
-	error |= device_create_file(dev, &dev_attr_gamma);
-	error |= device_create_file(dev, &dev_attr_dvcontrol);
-	error |= device_create_file(dev, &dev_attr_csc);
+	/* added by Levi for DVI */
+	error |= device_create_file(dev, &dev_attr_modelname);
+	error |= device_create_file(dev, &dev_attr_dvi);
+#ifdef TSB_MMP
+    error |= device_create_file(dev, &dev_attr_gamma);
+#endif
 
 	if (dc->out->stereo) {
 		error |= device_create_file(dev, &dev_attr_stereo_orientation);

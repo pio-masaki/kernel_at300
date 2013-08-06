@@ -83,6 +83,7 @@ struct mxt_platform_data {
 	unsigned int gpio_reset;
 	unsigned int gpio_ac;
 	unsigned int gpio_hdmi;
+	int data_num;
 };
 
 #endif /* __LINUX_ATMEL_MXT_TS_H */

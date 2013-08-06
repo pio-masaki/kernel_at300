@@ -270,7 +270,7 @@ static void vibrator_free(struct platform_device *pdev)
 IMMVIBESPIAPI VibeStatus ImmVibeSPI_ForceOut_AmpDisable( VibeUInt8 nActuatorIndex )
 {
     if (haptic_vibrator->amp_enabled) {
-		DbgOut(( "[ImmVibeSPI] : ImmVibeSPI_ForceOut_AmpDisable\n"));
+		DbgOut((DBL_VERBOSE, "[ImmVibeSPI] : ImmVibeSPI_ForceOut_AmpDisable\n"));
 		
         vibrator_disable();
         vibrator_disable_pwm();
@@ -289,7 +289,7 @@ IMMVIBESPIAPI VibeStatus ImmVibeSPI_ForceOut_AmpEnable( VibeUInt8 nActuatorIndex
 	}
 	
     if (haptic_vibrator->amp_enabled == false) {
-		DbgOut(( "[ImmVibeSPI] : ImmVibeSPI_ForceOut_AmpEnable\n"));
+		DbgOut((DBL_VERBOSE, "[ImmVibeSPI] : ImmVibeSPI_ForceOut_AmpEnable\n"));
         vibrator_enable_pwm();
         vibrator_enable();
 	}
@@ -300,7 +300,7 @@ IMMVIBESPIAPI VibeStatus ImmVibeSPI_ForceOut_AmpEnable( VibeUInt8 nActuatorIndex
 /* Called at initialization time to set PWM freq, disable amp, etc... */
 IMMVIBESPIAPI VibeStatus ImmVibeSPI_ForceOut_Initialize(void)
 {
-	DbgOut(( "[ImmVibeSPI] : ImmVibeSPI_ForceOut_Initialize\n" ));
+	DbgOut((DBL_VERBOSE, "[ImmVibeSPI] : ImmVibeSPI_ForceOut_Initialize\n" ));
 
    	ImmVibeSPI_ForceOut_AmpDisable( 0 );
 	
@@ -310,7 +310,7 @@ IMMVIBESPIAPI VibeStatus ImmVibeSPI_ForceOut_Initialize(void)
 /* Called at termination time to set PWM freq, disable amp, etc... */
 IMMVIBESPIAPI VibeStatus ImmVibeSPI_ForceOut_Terminate( void )
 {
- 	DbgOut(( "[ImmVibeSPI] : ImmVibeSPI_ForceOut_Terminate\n" ));
+ 	DbgOut((DBL_VERBOSE, "[ImmVibeSPI] : ImmVibeSPI_ForceOut_Terminate\n" ));
 
 	ImmVibeSPI_ForceOut_AmpDisable(0);
 
@@ -341,7 +341,6 @@ IMMVIBESPIAPI VibeStatus ImmVibeSPI_ForceOut_SetSamples( VibeUInt8 nActuatorInde
         case 8:
             /* pForceOutputBuffer is expected to contain 1 byte */
             if (nBufferSizeInBytes != 1) {
-                // DbgOut((KERN_ERR "[ImmVibeSPI] ImmVibeSPI_ForceOut_SetSamples nBufferSizeInBytes =  %d \n", nBufferSizeInBytes ));
 				return VIBE_E_FAIL;
             }
             nForce = pForceOutputBuffer[0];
@@ -358,10 +357,6 @@ IMMVIBESPIAPI VibeStatus ImmVibeSPI_ForceOut_SetSamples( VibeUInt8 nActuatorInde
             return VIBE_E_FAIL;
     }
 	 
-    //	DbgOut(( "[ImmVibeSPI] ImmVibeSPI_ForceOut_Set nForce =  %d ,CURRENT_TIME = %d\n", nForce , CURRENT_TIME));
-
-	//DbgOut(( "[ImmVibeSPI] : nForce = %d\n",nForce));
-
     if (haptic_vibrator->on_dock == false) {
 		if ( nForce == 0 ) {
 			ImmVibeSPI_ForceOut_AmpDisable(1);
@@ -369,7 +364,6 @@ IMMVIBESPIAPI VibeStatus ImmVibeSPI_ForceOut_SetSamples( VibeUInt8 nActuatorInde
 		} else {
 			ImmVibeSPI_ForceOut_AmpEnable(1);
 			DutyCycle=((nForce + 128) * haptic_vibrator->pwm_period) >> 8;
-            //DbgOut(( "[ImmVibeSPI] ImmVibeSPI_ForceOut_Set DutyCycle =  %d \n", DutyCycle ));
 		}
 	
 		pwm_config(haptic_vibrator->pwm, DutyCycle, haptic_vibrator->pwm_period);

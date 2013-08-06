@@ -3,7 +3,7 @@
  *
  * RTC driver for TI TPS6591x
  *
- * Copyright (c) 2011, NVIDIA Corporation.
+ * Copyright (c) 2011-2012, NVIDIA Corporation.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -47,8 +47,6 @@
 #define RTC_RESET_VALUE 0x80
 #define ALARM_INT_STATUS 0x40
 
-static int tps6591x_rtc_alarm_irq_enable(struct device *dev,
-                                         unsigned int enable);
 /*
 Linux RTC driver refers 1900 as base year in many calculations.
 (e.g. refer drivers/rtc/rtc-lib.c)
@@ -82,7 +80,7 @@ static int tps6591x_read_regs(struct device *dev, int reg, int len,
 	/* dummy read of STATUS_REG as per data sheet */
 	ret = tps6591x_reads(dev->parent, RTC_STATUS, 1, val);
 	if (ret < 0) {
-		dev_err(dev->parent, " %s failed reading from RTC_STATUS\n",
+		dev_err(dev->parent, "\n %s failed reading from RTC_STATUS\n",
 			__func__);
 		WARN_ON(1);
 		return ret;
@@ -90,7 +88,7 @@ static int tps6591x_read_regs(struct device *dev, int reg, int len,
 
 	ret = tps6591x_reads(dev->parent, reg, len, val);
 	if (ret < 0) {
-		dev_err(dev->parent, " %s failed reading from 0x%02x\n",
+		dev_err(dev->parent, "\n %s failed reading from 0x%02x\n",
 			__func__, reg);
 		WARN_ON(1);
 		return ret;
@@ -104,7 +102,7 @@ static int tps6591x_write_regs(struct device *dev, int reg, int len,
 	int ret;
 	ret = tps6591x_writes(dev->parent, reg, len, val);
 	if (ret < 0) {
-		dev_err(dev->parent, " %s failed writing\n", __func__);
+		dev_err(dev->parent, "\n %s failed writing\n", __func__);
 		WARN_ON(1);
 		return ret;
 	}
@@ -115,6 +113,7 @@ static int tps6591x_write_regs(struct device *dev, int reg, int len,
 static int tps6591x_rtc_valid_tm(struct rtc_time *tm)
 {
 	if (tm->tm_year >= (RTC_YEAR_OFFSET + 99)
+		|| tm->tm_year < (RTC_YEAR_OFFSET)
 		|| tm->tm_mon >= 12
 		|| tm->tm_mday < 1
 		|| tm->tm_mday > rtc_month_days(tm->tm_mon, tm->tm_year + OS_REF_YEAR)
@@ -162,23 +161,19 @@ static int tps6591x_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	int err;
 	err = tps6591x_read_regs(dev, RTC_SECONDS_REG, sizeof(buff), buff);
 	if (err < 0) {
-		dev_err(dev, " %s :: failed to read time\n", __FILE__);
+		dev_err(dev, "\n %s :: failed to read time\n", __FILE__);
 		return err;
 	}
-
-	/* decrease the value of month by one after reading from PMU */
-	buff[4] -= 1;
-
 	convert_bcd_to_decimal(buff, sizeof(buff));
 	tm->tm_sec = buff[0];
 	tm->tm_min = buff[1];
 	tm->tm_hour = buff[2];
 	tm->tm_mday = buff[3];
-	tm->tm_mon = buff[4];
-	tm->tm_year = buff[5];
+	tm->tm_mon = buff[4] - 1;
+	tm->tm_year = buff[5] + RTC_YEAR_OFFSET;
 	tm->tm_wday = buff[6];
 
-	/*at the 59th second, it is going to be carried. Double check it*/
+	/*Check if second is at 59, if so, read register again*/
 	if (tm->tm_sec == 59) {
 		err = tps6591x_read_regs(dev, RTC_SECONDS_REG, sizeof(buff), buff);
 		if (err < 0) {
@@ -186,23 +181,19 @@ static int tps6591x_rtc_read_time(struct device *dev, struct rtc_time *tm)
 			return err;
 		}
 
-		/* decrease the value of month by one after reading from PMU */
-		buff[4] -= 1;
-
 		convert_bcd_to_decimal(buff, sizeof(buff));
-		/*if second is carried, return new value;
-		  if second is not carried, return the old one because it is correct*/
-		if (buff[0] != 59) { /*carried*/
+		/*if second carried, use new value, otherwise use the old one
+		   to prevent minute carried while second yet*/
+		if (buff[0] != 59) {
 			tm->tm_sec = buff[0];
 			tm->tm_min = buff[1];
 			tm->tm_hour = buff[2];
 			tm->tm_mday = buff[3];
-			tm->tm_mon = buff[4];
-			tm->tm_year = buff[5];
+			tm->tm_mon = buff[4] - 1;
+			tm->tm_year = buff[5] + RTC_YEAR_OFFSET;
 			tm->tm_wday = buff[6];
 		}
 	}
-
 	print_time(dev, tm);
 	return tps6591x_rtc_valid_tm(tm);
 }
@@ -215,7 +206,7 @@ static int tps6591x_rtc_stop(struct device *dev)
 	do {
 		err = tps6591x_read_regs(dev, RTC_CTRL, 1, &reg);
 		if (err < 0) {
-			dev_err(dev->parent, " failed to read RTC_CTRL reg\n");
+			dev_err(dev->parent, "\n failed to read RTC_CTRL reg\n");
 			return err;
 		}
 
@@ -224,18 +215,18 @@ static int tps6591x_rtc_stop(struct device *dev)
 
 		err = tps6591x_write_regs(dev, RTC_CTRL, 1, &reg);
 		if (err < 0) {
-			dev_err(dev->parent, " failed to program RTC_CTRL reg\n");
+			dev_err(dev->parent, "\n failed to program RTC_CTRL reg\n");
 			return err;
 		}
 
 		err = tps6591x_read_regs(dev, RTC_STATUS, 1, &reg);
 		if (err < 0) {
-			dev_err(dev->parent, " failed to read RTC_CTRL reg\n");
+			dev_err(dev->parent, "\n failed to read RTC_CTRL reg\n");
 			return err;
 		}
 		/* FixMe: Is allowing up to 5 retries sufficient?? */
 		if (retries++ == 5) {
-			dev_err(dev->parent, " failed to stop RTC\n");
+			dev_err(dev->parent, "\n failed to stop RTC\n");
 			return -EBUSY;
 		}
 	}	while (reg & 2);
@@ -251,7 +242,7 @@ static int tps6591x_rtc_start(struct device *dev)
 	do {
 		err = tps6591x_read_regs(dev, RTC_CTRL, 1, &reg);
 		if (err < 0) {
-			dev_err(dev->parent, " failed to read RTC_CTRL reg\n");
+			dev_err(dev->parent, "\n failed to read RTC_CTRL reg\n");
 			return err;
 		}
 
@@ -260,18 +251,18 @@ static int tps6591x_rtc_start(struct device *dev)
 
 		err = tps6591x_write_regs(dev, RTC_CTRL, 1, &reg);
 		if (err < 0) {
-			dev_err(dev->parent, " failed to program RTC_CTRL reg\n");
+			dev_err(dev->parent, "\n failed to program RTC_CTRL reg\n");
 			return err;
 		}
 
 		err = tps6591x_read_regs(dev, RTC_STATUS, 1, &reg);
 		if (err < 0) {
-			dev_err(dev->parent, " failed to read RTC_CTRL reg\n");
+			dev_err(dev->parent, "\n failed to read RTC_CTRL reg\n");
 			return err;
 		}
 		/* FixMe: Is allowing up to 5 retries sufficient?? */
 		if (retries++ == 5) {
-			dev_err(dev->parent, " failed to stop RTC\n");
+			dev_err(dev->parent, "\n failed to stop RTC\n");
 			return -EBUSY;
 		}
 	}	while (!(reg & 2));
@@ -284,37 +275,76 @@ static int tps6591x_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	u8 buff[7];
 	int err;
 
+	err = tps6591x_rtc_valid_tm(tm);
+	if (err < 0) {
+		dev_err(dev->parent, "\n Invalid Time\n");
+		return err;
+	}
+
 	buff[0] = tm->tm_sec;
 	buff[1] = tm->tm_min;
 	buff[2] = tm->tm_hour;
 	buff[3] = tm->tm_mday;
-	buff[4] = tm->tm_mon;
-	buff[5] = tm->tm_year;
+	buff[4] = tm->tm_mon + 1;
+	buff[5] = tm->tm_year % RTC_YEAR_OFFSET;
 	buff[6] = tm->tm_wday;
 
 	print_time(dev, tm);
 	convert_decimal_to_bcd(buff, sizeof(buff));
 	err = tps6591x_rtc_stop(dev);
 	if (err < 0) {
-		dev_err(dev->parent, " failed to clear RTC_ENABLE\n");
+		dev_err(dev->parent, "\n failed to clear RTC_ENABLE\n");
 		return err;
 	}
 
-	/* increase the value of month by one before writing to PMU */
-	buff[4] += 1;
-
 	err = tps6591x_write_regs(dev, RTC_SECONDS_REG, sizeof(buff), buff);
 	if (err < 0) {
-		dev_err(dev->parent, " failed to program new time\n");
+		dev_err(dev->parent, "\n failed to program new time\n");
 		return err;
 	}
 
 	err = tps6591x_rtc_start(dev);
 	if (err < 0) {
-		dev_err(dev->parent, " failed to set RTC_ENABLE\n");
+		dev_err(dev->parent, "\n failed to set RTC_ENABLE\n");
 		return err;
 	}
 
+	return 0;
+}
+
+static int tps6591x_rtc_alarm_irq_enable(struct device *dev,
+					 unsigned int enable)
+{
+	struct tps6591x_rtc *rtc = dev_get_drvdata(dev);
+	u8 reg;
+	int err;
+
+	if (rtc->irq == -1)
+		return -EIO;
+
+	if (enable) {
+		if (rtc->irq_en == true)
+			return 0;
+		err = tps6591x_read_regs(dev, RTC_INT, 1, &reg);
+		if (err)
+			return err;
+		reg |= 0x8;
+		err = tps6591x_write_regs(dev, RTC_INT, 1, &reg);
+		if (err)
+			return err;
+		rtc->irq_en = true;
+	} else {
+		if (rtc->irq_en == false)
+			return 0;
+		err = tps6591x_read_regs(dev, RTC_INT, 1, &reg);
+		if (err)
+			return err;
+		reg &= ~0x8;
+		err = tps6591x_write_regs(dev, RTC_INT, 1, &reg);
+		if (err)
+			return err;
+		rtc->irq_en = false;
+	}
 	return 0;
 }
 
@@ -329,21 +359,21 @@ static int tps6591x_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	if (rtc->irq == -1)
 		return -EIO;
 
-	dev_info(dev->parent, " setting alarm to requested time:: ");
+	err = tps6591x_rtc_valid_tm(&alrm->time);
+	if (err < 0) {
+		dev_err(dev->parent, "\n Invalid alarm time\n");
+		return err;
+	}
+
+	dev_info(dev->parent, "\n setting alarm to requested time::\n");
 	print_time(dev->parent, &alrm->time);
 	rtc_tm_to_time(&alrm->time, &seconds);
 	tps6591x_rtc_read_time(dev, &tm);
 	rtc_tm_to_time(&tm, &rtc->epoch_start);
 
 	if (WARN_ON(alrm->enabled && (seconds < rtc->epoch_start))) {
-		dev_err(dev->parent, " can't set alarm to requested time\n");
+		dev_err(dev->parent, "\n can't set alarm to requested time\n");
 		return -EINVAL;
-	}
-
-	if (alrm->enabled && !rtc->irq_en) {
-		rtc->irq_en = true;
-	} else if (!alrm->enabled && rtc->irq_en) {
-		rtc->irq_en = false;
 	}
 
     /* use pending=0x5A to indicate poweron by alarm*/
@@ -364,25 +394,22 @@ static int tps6591x_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
         return 0;
     }
 
+	err = tps6591x_rtc_alarm_irq_enable(dev, alrm->enabled);
+	if(err) {
+		dev_err(dev->parent, "\n can't set alarm irq\n");
+		return err;
+	}
+
 	buff[0] = alrm->time.tm_sec;
 	buff[1] = alrm->time.tm_min;
 	buff[2] = alrm->time.tm_hour;
 	buff[3] = alrm->time.tm_mday;
-	buff[4] = alrm->time.tm_mon;
-	buff[5] = alrm->time.tm_year;
+	buff[4] = alrm->time.tm_mon + 1;
+	buff[5] = alrm->time.tm_year % RTC_YEAR_OFFSET;
 	convert_decimal_to_bcd(buff, sizeof(buff));
-
-	/* increase the value of month by one before writing to PMU */
-	buff[4] += 1;
-
 	err = tps6591x_write_regs(dev, RTC_ALARM, sizeof(buff), buff);
 	if (err)
-		dev_err(dev->parent, " unable to program alarm\n");
-
-	if (rtc->irq_en)
-		tps6591x_rtc_alarm_irq_enable(dev, 1);
-	else
-		tps6591x_rtc_alarm_irq_enable(dev, 0);
+		dev_err(dev->parent, "\n unable to program alarm\n");
 
 	return err;
 }
@@ -395,63 +422,19 @@ static int tps6591x_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	err = tps6591x_read_regs(dev, RTC_ALARM, sizeof(buff), buff);
 	if (err)
 		return err;
-
-	/* decrease the value of month by one after reading from PMU */
-	buff[4] -= 1;
-
 	convert_bcd_to_decimal(buff, sizeof(buff));
 
 	alrm->time.tm_sec = buff[0];
 	alrm->time.tm_min = buff[1];
 	alrm->time.tm_hour = buff[2];
 	alrm->time.tm_mday = buff[3];
-	alrm->time.tm_mon = buff[4];
-	alrm->time.tm_year = buff[5];
+	alrm->time.tm_mon = buff[4] - 1;
+	alrm->time.tm_year = buff[5] + RTC_YEAR_OFFSET;
 
-	dev_info(dev->parent, " getting alarm time:: ");
+	dev_info(dev->parent, "\n getting alarm time::\n");
 	print_time(dev, &alrm->time);
 
 	return 0;
-}
-
-static int tps6591x_rtc_alarm_irq_enable(struct device *dev,
-					 unsigned int enable)
-{
-	struct tps6591x_rtc *rtc = dev_get_drvdata(dev);
-	u8 reg;
-	int err = 0;
-
-	if (rtc->irq == -1)
-		return -EIO;
-
-    mutex_lock(&rtc->lock);
-	if (enable) {
-		/* if (rtc->irq_en == true) */
-		/* 	return 0; */
-		err = tps6591x_read_regs(dev, RTC_INT, 1, &reg);
-		if (err)
-			goto fail;
-		reg |= 0x8;
-		err = tps6591x_write_regs(dev, RTC_INT, 1, &reg);
-		if (err)
-			goto fail;
-		rtc->irq_en = true;
-	} else {
-		/* if (rtc->irq_en == false) */
-		/* 	return 0; */
-		err = tps6591x_read_regs(dev, RTC_INT, 1, &reg);
-		if (err)
-			goto fail;
-		reg &= ~0x8;
-		err = tps6591x_write_regs(dev, RTC_INT, 1, &reg);
-		if (err)
-			goto fail;
-		rtc->irq_en = false;
-	}
-
- fail:
-    mutex_unlock(&rtc->lock);
-	return err;
 }
 
 static const struct rtc_class_ops tps6591x_rtc_ops = {
@@ -508,9 +491,9 @@ static int __devinit tps6591x_rtc_probe(struct platform_device *pdev)
 	}
 
 	if (pdata->irq < 0)
-		dev_err(&pdev->dev, " no IRQ specified, wakeup is disabled\n");
+		dev_err(&pdev->dev, "\n no IRQ specified, wakeup is disabled\n");
 
-	mutex_init(&rtc->lock);
+    mutex_init(&rtc->lock);
 	dev_set_drvdata(&pdev->dev, rtc);
 	device_init_wakeup(&pdev->dev, 1);
 	rtc->rtc = rtc_device_register(pdev->name, &pdev->dev,
@@ -524,11 +507,11 @@ static int __devinit tps6591x_rtc_probe(struct platform_device *pdev)
 	if ((int)pdev && (int)&pdev->dev)
 		err = tps6591x_read_regs(&pdev->dev, RTC_STATUS, 1, &reg);
 	else {
-		dev_err(&pdev->dev, " %s Input params incorrect\n", __func__);
+		dev_err(&pdev->dev, "\n %s Input params incorrect\n", __func__);
 		return -EBUSY;
 	}
 	if (err) {
-		dev_err(&pdev->dev, " %s unable to read status\n", __func__);
+		dev_err(&pdev->dev, "\n %s unable to read status\n", __func__);
 		return -EBUSY;
 	}
 
@@ -539,15 +522,29 @@ static int __devinit tps6591x_rtc_probe(struct platform_device *pdev)
 		return -EBUSY;
 	}
 
+	err = tps6591x_rtc_start(&pdev->dev);
+	if (err) {
+		dev_err(&pdev->dev, "unable to start RTC\n");
+		return -EBUSY;
+	}
+
 	tps6591x_rtc_read_time(&pdev->dev, &tm);
-	if ((tm.tm_year < RTC_YEAR_OFFSET || tm.tm_year > (RTC_YEAR_OFFSET + 99))){
-		if (pdata->time.tm_year < 2000 || pdata->time.tm_year > 2100)	{
+
+	if (tps6591x_rtc_valid_tm(&tm) < 0) {
+		if (pdata->time.tm_year < 2000 || pdata->time.tm_year >= 2100) {
 			memset(&pdata->time, 0, sizeof(pdata->time));
-			pdata->time.tm_year = RTC_YEAR_OFFSET;
+			pdata->time.tm_year = 2000;
 			pdata->time.tm_mday = 1;
-		} else
-		pdata->time.tm_year -= OS_REF_YEAR;
-		tps6591x_rtc_set_time(&pdev->dev, &pdata->time);
+		}
+
+        /* For compatibility to ast-ics */
+        tm.tm_year -= RTC_YEAR_OFFSET;
+        if (tps6591x_rtc_valid_tm(&tm) == 0) {
+            tps6591x_rtc_set_time(&pdev->dev, &tm);
+        } else {
+            pdata->time.tm_year -= OS_REF_YEAR;
+            tps6591x_rtc_set_time(&pdev->dev, &pdata->time);
+        }
 	}
 
 	reg = ALARM_INT_STATUS;
@@ -557,12 +554,12 @@ static int __devinit tps6591x_rtc_probe(struct platform_device *pdev)
 		return -EBUSY;
 	}
 
-	/* reg = ENABLE_ALARM_INT; */
-	/* tps6591x_write_regs(&pdev->dev, RTC_INT, 1, &reg); */
-	/* if (err) { */
-	/* 	dev_err(&pdev->dev, "unable to program Interrupt Mask reg\n"); */
-	/* 	return -EBUSY; */
-	/* } */
+        /* reg = ENABLE_ALARM_INT; */
+        /* tps6591x_write_regs(&pdev->dev, RTC_INT, 1, &reg); */
+        /* if (err) { */
+        /*      dev_err(&pdev->dev, "unable to program Interrupt Mask reg\n"); */
+        /*      return -EBUSY; */
+        /* } */
 
 	if (pdata && (pdata->irq >= 0)) {
 		rtc->irq = pdata->irq;
@@ -577,7 +574,7 @@ static int __devinit tps6591x_rtc_probe(struct platform_device *pdev)
 			enable_irq_wake(rtc->irq);
 		}
 	}
-    
+
     /* Clean RTC alarm interrupt at initial */
     tps6591x_rtc_alarm_irq_enable(&pdev->dev, 0);
 
@@ -597,6 +594,7 @@ static int __devexit tps6591x_rtc_remove(struct platform_device *pdev)
 {
 	struct tps6591x_rtc *rtc = dev_get_drvdata(&pdev->dev);
 
+    wake_lock_destroy(&rtc->wake_lock);
     /* Clean RTC alarm interrupt */
     tps6591x_rtc_alarm_irq_enable(&pdev->dev, 0);
 

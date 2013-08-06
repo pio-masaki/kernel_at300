@@ -9,6 +9,7 @@
 #include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
+#include <linux/syscore_ops.h>
 
 #include "internals.h"
 
@@ -39,30 +40,64 @@ void suspend_device_irqs(void)
 }
 EXPORT_SYMBOL_GPL(suspend_device_irqs);
 
-/**
- * resume_device_irqs - enable interrupt lines disabled by suspend_device_irqs()
- *
- * Enable all interrupt lines previously disabled by suspend_device_irqs() that
- * have the IRQS_SUSPENDED flag set.
- */
-void resume_device_irqs(void)
+static void resume_irqs(bool want_early)
 {
 	struct irq_desc *desc;
 	int irq;
 
 	for_each_irq_desc(irq, desc) {
 		unsigned long flags;
+		bool is_early = desc->action &&
+			desc->action->flags & IRQF_EARLY_RESUME;
+
+		if (is_early != want_early)
+			continue;
 
 		raw_spin_lock_irqsave(&desc->lock, flags);
 		__enable_irq(desc, irq, true);
 		raw_spin_unlock_irqrestore(&desc->lock, flags);
 	}
 }
+
+/**
+ * irq_pm_syscore_ops - enable interrupt lines early
+ *
+ * Enable all interrupt lines with %IRQF_EARLY_RESUME set.
+ */
+static void irq_pm_syscore_resume(void)
+{
+	resume_irqs(true);
+}
+
+static struct syscore_ops irq_pm_syscore_ops = {
+	.resume		= irq_pm_syscore_resume,
+};
+
+static int __init irq_pm_init_ops(void)
+{
+	register_syscore_ops(&irq_pm_syscore_ops);
+	return 0;
+}
+
+device_initcall(irq_pm_init_ops);
+
+/**
+ * resume_device_irqs - enable interrupt lines disabled by suspend_device_irqs()
+ *
+ * Enable all non-%IRQF_EARLY_RESUME interrupt lines previously
+ * disabled by suspend_device_irqs() that have the IRQS_SUSPENDED flag
+ * set as well as those with %IRQF_FORCE_RESUME.
+ */
+void resume_device_irqs(void)
+{
+	resume_irqs(false);
+}
 EXPORT_SYMBOL_GPL(resume_device_irqs);
 
 /**
  * check_wakeup_irqs - check if any wake-up interrupts are pending
  */
+static int pending_wakeup_irq = 0;
 int check_wakeup_irqs(void)
 {
 	struct irq_desc *desc;
@@ -72,7 +107,10 @@ int check_wakeup_irqs(void)
 		if (irqd_is_wakeup_set(&desc->irq_data)) {
 			if (desc->istate & IRQS_PENDING) {
 				pr_info("Wakeup IRQ %d %s pending, suspend aborted\n",
-					irq, desc->name ? desc->name : "");
+					irq,
+					desc->action && desc->action->name ?
+					desc->action->name : "");
+                pending_wakeup_irq = irq;
 				return -EBUSY;
 			}
 			continue;
@@ -89,6 +127,11 @@ int check_wakeup_irqs(void)
 		    irq_desc_get_chip(desc)->flags & IRQCHIP_MASK_ON_SUSPEND)
 			mask_irq(desc);
 	}
-
+    pending_wakeup_irq = 0;
 	return 0;
+}
+
+int get_pending_wakeup_irq(void)
+{
+    return pending_wakeup_irq;
 }

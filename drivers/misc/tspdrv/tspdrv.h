@@ -6,7 +6,7 @@
 ** Description: 
 **     Constants and type definitions for the TouchSense Kernel Module.
 **
-** Portions Copyright (c) 2008-2011 Immersion Corporation. All Rights Reserved. 
+** Portions Copyright (c) 2008-2012 Immersion Corporation. All Rights Reserved. 
 **
 ** This file contains Original Code and/or Modifications of Original Code 
 ** as defined in and that are subject to the GNU Public License v2 - 
@@ -40,6 +40,8 @@
 #define TSPDRV_DISABLE_AMP                  _IO(TSPDRV_IOCTL_GROUP, 4)
 #define TSPDRV_GET_NUM_ACTUATORS            _IO(TSPDRV_IOCTL_GROUP, 5)
 #define TSPDRV_SET_DEVICE_PARAMETER         _IO(TSPDRV_IOCTL_GROUP, 6)
+#define TSPDRV_SET_DBG_LEVEL                _IO(TSPDRV_IOCTL_GROUP, 7)
+#define TSPDRV_GET_DBG_LEVEL                _IO(TSPDRV_IOCTL_GROUP, 8)
 
 /* 
 ** Frequency constant parameters to control force output values and signals.
@@ -56,9 +58,10 @@
 */
 #define VIBE_KP_CFG_UPDATE_RATE_MS          95
 
-#define VIBE_MAX_DEVICE_NAME_LENGTH			64
+#define VIBE_MAX_DEVICE_NAME_LENGTH         64
 #define SPI_HEADER_SIZE                     3   /* DO NOT CHANGE - SPI buffer header size */
 #define VIBE_OUTPUT_SAMPLE_SIZE             50  /* DO NOT CHANGE - maximum number of samples */
+#define MAX_DEBUG_BUFFER_LENGTH             1024
 
 /* Type definitions */
 #ifdef __KERNEL__
@@ -70,6 +73,15 @@ typedef int32_t		VibeInt32;
 typedef u_int32_t	VibeUInt32;
 typedef u_int8_t	VibeBool;
 typedef VibeInt32	VibeStatus;
+
+/* Debug Levels */
+#define DBL_TEMP                        0
+#define DBL_FATAL                       0
+#define DBL_ERROR                       1
+#define DBL_WARNING                     2
+#define DBL_INFO                        3
+#define DBL_VERBOSE                     4
+#define DBL_OVERKILL                    5
 
 #endif
 
@@ -94,11 +106,9 @@ typedef struct
 
 /* Kernel Debug Macros */
 #ifdef __KERNEL__
-    #ifdef VIBE_DEBUG
-        #define DbgOut(_x_) printk _x_
-    #else   /* VIBE_DEBUG */
-        #define DbgOut(_x_)
-    #endif  /* VIBE_DEBUG */
+    asmlinkage void _DbgOut(int level, const char *format,...);
+    #define DbgOut(_x_)  _DbgOut _x_ 
+
 
     #if defined(VIBE_RECORD) && defined(VIBE_DEBUG)
         #define DbgRecorderInit(_x_) _RecorderInit _x_

@@ -13,5 +13,6 @@ extern int switch_gpio_notifier_register(struct notifier_block *nb);
 extern int switch_gpio_notifier_unregister(struct notifier_block *nb);
 extern int switch_gpio_lock_hardware_notifier_register(struct notifier_block *nb);
 extern int switch_gpio_lock_hardware_notifier_unregister(struct notifier_block *nb);
+extern int switch_gpio_is_locked(void);
 
 #endif

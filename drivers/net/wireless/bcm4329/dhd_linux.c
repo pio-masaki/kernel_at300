@@ -42,6 +42,7 @@
 #include <linux/fs.h>
 #include <linux/inetdevice.h>
 #include <linux/mutex.h>
+#include <linux/device.h>
 
 #include <asm/uaccess.h>
 #include <asm/unaligned.h>
@@ -1519,7 +1520,8 @@ dhd_dpc_thread(void *data)
 					dhd_os_wake_unlock(&dhd->pub);
 				}
 			} else {
-				dhd_bus_stop(dhd->pub.bus, TRUE);
+				if (dhd->pub.up)
+					dhd_bus_stop(dhd->pub.bus, TRUE);
 				dhd_os_wake_unlock(&dhd->pub);
 			}
 		}
@@ -2053,7 +2055,7 @@ dhd_del_if(dhd_info_t *dhd, int ifidx)
 
 
 dhd_pub_t *
-dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
+dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen, void *dev)
 {
 	dhd_info_t *dhd = NULL;
 	struct net_device *net;
@@ -2070,7 +2072,7 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 		DHD_ERROR(("%s: OOM - alloc_etherdev\n", __FUNCTION__));
 		goto fail;
 	}
-
+	SET_NETDEV_DEV(net, (struct device *)dev);
 	/* Allocate primary dhd_info */
 	if (!(dhd = MALLOC(osh, sizeof(dhd_info_t)))) {
 		DHD_ERROR(("%s: OOM - alloc dhd_info\n", __FUNCTION__));

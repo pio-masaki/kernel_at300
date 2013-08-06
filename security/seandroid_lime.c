@@ -40,7 +40,6 @@
 #include <linux/kobject.h>
 #include <linux/genhd.h>
 #include <linux/kobj_map.h>
-
 #include <linux/types.h>
 #include <linux/slab.h>
 #include <net/sock.h>
@@ -62,6 +61,7 @@
 #define CONFIG_SECURITY_SEALIME_HASH_ALGORITHM "sha1"
 #define TOSLSM_DIGEST_SIZE 20
 
+#define CONFIG_SECURITY_SEALIME_WIFI_ASSOCIATE
 #define SEALIME_UNLOADABLE
 
 extern struct kset *bus_kset;
@@ -71,47 +71,10 @@ struct security_operations *lkm_secops = NULL;
 /* for extra hooks. */
 struct security_operations *extra_secops = NULL;
 
-char *_xx_encode(const char *str)
+
+static inline bool _xx_is_valid(const unsigned char c)
 {
-    int len = 0;
-    const char *p = str;
-    char *cp;
-    char *cp0;
-
-    if (!p)
-	return NULL;
-    while (*p) {
-	const unsigned char c = *p++;
-	if (c == '\\')
-	    len += 2;
-	else if (c > ' ' && c < 127)
-	    len++;
-	else
-	    len += 4;
-    }
-    len++;
-    /* Reserve space for appending "/". */
-    cp = kzalloc(len + 10, GFP_NOFS);
-    if (!cp)
-	return NULL;
-    cp0 = cp;
-    p = str;
-    while (*p) {
-	const unsigned char c = *p++;
-
-	if (c == '\\') {
-	    *cp++ = '\\';
-	    *cp++ = '\\';
-	} else if (c > ' ' && c < 127) {
-	    *cp++ = c;
-	} else {
-	    *cp++ = '\\';
-	    *cp++ = (c >> 6) + '0';
-	    *cp++ = ((c >> 3) & 7) + '0';
-	    *cp++ = (c & 7) + '0';
-	}
-    }
-    return cp0;
+	return c > ' ' && c < 127;
 }
 
 void _xx_warn_oom(const char *function)
@@ -124,9 +87,202 @@ void _xx_warn_oom(const char *function)
 	       function);
 	tomoyo_last_pid = pid;
     }
+ }
+
+
+#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,29)) && (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)))
+static int _xx_encode(char *buffer, int buflen, const char *str)
+{
+	while (1) {
+		const unsigned char c = *(unsigned char *)str++;
+
+		if (_xx_is_valid(c)) {
+			if (--buflen <= 0)
+				break;
+			*buffer++ = (char)c;
+			if (c != '\\')
+				continue;
+			if (--buflen <= 0)
+				break;
+			*buffer++ = (char)c;
+			continue;
+		}
+		if (!c) {
+			if (--buflen <= 0)
+				break;
+			*buffer = '\0';
+			return 0;
+		}
+		buflen -= 4;
+		if (buflen <= 0)
+			break;
+		*buffer++ = '\\';
+		*buffer++ = (c >> 6) + '0';
+		*buffer++ = ((c >> 3) & 7) + '0';
+		*buffer++ = (c & 7) + '0';
+	}
+	return -ENOMEM;
+}
+#else
+char *_xx_encode(const char *str)
+{
+	int len = 0;
+	const char *p = str;
+	char *cp;
+	char *cp0;
+
+	if (!p)
+		return NULL;
+	while (*p) {
+		const unsigned char c = *p++;
+		if (c == '\\')
+			len += 2;
+		else if (c > ' ' && c < 127)
+			len++;
+		else
+			len += 4;
+	}
+	len++;
+	/* Reserve space for appending "/". */
+	cp = kzalloc(len + 10, GFP_NOFS);
+	if (!cp)
+		return NULL;
+	cp0 = cp;
+	p = str;
+	while (*p) {
+		const unsigned char c = *p++;
+
+		if (c == '\\') {
+			*cp++ = '\\';
+			*cp++ = '\\';
+		} else if (c > ' ' && c < 127) {
+			*cp++ = c;
+		} else {
+			*cp++ = '\\';
+			*cp++ = (c >> 6) + '0';
+			*cp++ = ((c >> 3) & 7) + '0';
+			*cp++ = (c & 7) + '0';
+		}
+	}
+	return cp0;
+}
+#endif
+
+
+#if ((LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,29)) && (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34)))
+static int _xx_realpath_from_path(struct path *path, char *newname,
+				  int newname_len)
+{
+	struct dentry *dentry = path->dentry;
+	int error = -ENOMEM;
+	char *sp;
+
+	if (!dentry || !path->mnt || !newname || newname_len <= 2048)
+		return -EINVAL;
+	if (dentry->d_op && dentry->d_op->d_dname) {
+		/* For "socket:[\$]" and "pipe:[\$]". */
+		static const int offset = 1536;
+		sp = dentry->d_op->d_dname(dentry, newname + offset,
+					   newname_len - offset);
+	} else {
+		/* Taken from d_namespace_path(). */
+		struct path ns_root = { };
+		struct path root;
+		struct path tmp;
+
+		read_lock(&current->fs->lock);
+		root = current->fs->root;
+		path_get(&root);
+		read_unlock(&current->fs->lock);
+		spin_lock(&vfsmount_lock);
+		if (root.mnt && root.mnt->mnt_ns)
+			ns_root.mnt = mntget(root.mnt->mnt_ns->root);
+		if (ns_root.mnt)
+			ns_root.dentry = dget(ns_root.mnt->mnt_root);
+		spin_unlock(&vfsmount_lock);
+		spin_lock(&dcache_lock);
+		tmp = ns_root;
+		sp = __d_path(path, &tmp, newname, newname_len);
+		spin_unlock(&dcache_lock);
+		path_put(&root);
+		path_put(&ns_root);
+	}
+	if (IS_ERR(sp)) {
+		error = PTR_ERR(sp);
+	} else {
+		error = _xx_encode(newname, sp - newname, sp);
+	}
+
+	/* Append trailing '/' if dentry is a directory. */
+	if (!error && dentry->d_inode && S_ISDIR(dentry->d_inode->i_mode)
+	    && *newname) {
+		sp = newname + strlen(newname);
+		if (*(sp - 1) != '/') {
+			if (sp < newname + newname_len - 4) {
+				*sp++ = '/';
+				*sp = '\0';
+			} else {
+				error = -ENOMEM;
+			}
+		}
+	}
+
+	return error;
+}
+#elif ((LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34)) && (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36)))
+int _xx_realpath_from_path(struct path *path, char *newname,
+                           int newname_len)
+{
+	int error = -ENOMEM;
+	struct dentry *dentry = path->dentry;
+	char *sp;
+
+	if (!dentry || !path->mnt || !newname || newname_len <= 2048)
+		return -EINVAL;
+	if (dentry->d_op && dentry->d_op->d_dname) {
+		/* For "socket:[\$]" and "pipe:[\$]". */
+		static const int offset = 1536;
+		sp = dentry->d_op->d_dname(dentry, newname + offset,
+		                           newname_len - offset);
+	} else {
+		struct path ns_root = {.mnt = NULL, .dentry = NULL};
+
+		spin_lock(&dcache_lock);
+		/* go to whatever namespace root we are under */
+		sp = __d_path(path, &ns_root, newname, newname_len);
+		spin_unlock(&dcache_lock);
+		/* Prepend "/proc" prefix if using internal proc vfs mount. */
+		if (!IS_ERR(sp) && (path->mnt->mnt_flags & MNT_INTERNAL) &&
+		    (path->mnt->mnt_sb->s_magic == PROC_SUPER_MAGIC)) {
+			sp -= 5;
+			if (sp >= newname)
+				memcpy(sp, "/proc", 5);
+			else
+
+	sp = ERR_PTR(-ENOMEM);
+		}
+	}
+	if (IS_ERR(sp))
+		error = PTR_ERR(sp);
+	else
+		error = _xx_encode(newname, sp - newname, sp);
+	/* Append trailing '/' if dentry is a directory. */
+	if (!error && dentry->d_inode && S_ISDIR(dentry->d_inode->i_mode)
+	    && *newname) {
+		sp = newname + strlen(newname);
+		if (*(sp - 1) != '/') {
+			if (sp < newname + newname_len - 4) {
+				*sp++ = '/';
+				*sp = '\0';
+			} else {
+				error = -ENOMEM;
+			}
+		}
+	}
+	return error;
 }
 
-
+#elif ((LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)) && (LINUX_VERSION_CODE < KERNEL_VERSION(3,0,0)))
 static char *_xx_realpath_from_path_tmp(struct path *path)
 {
     char *buf = NULL;
@@ -135,96 +291,280 @@ static char *_xx_realpath_from_path_tmp(struct path *path)
     struct dentry *dentry = path->dentry;
     bool is_dir;
     if (!dentry)
-	return NULL;
+        return NULL;
     is_dir = dentry->d_inode && S_ISDIR(dentry->d_inode->i_mode);
 
     while (1) {
-	struct path ns_root = { .mnt = NULL, .dentry = NULL };
-	char *pos;
-	buf_len <<= 1;
-	kfree(buf);
-	buf = kmalloc(buf_len, GFP_NOFS);
-	if (!buf)
-	    break;
-	/* Get better name for socket. */
-	if (dentry->d_sb && dentry->d_sb->s_magic == SOCKFS_MAGIC) {
-	    struct inode *inode = dentry->d_inode;
-	    struct socket *sock = inode ? SOCKET_I(inode) : NULL;
-	    struct sock *sk = sock ? sock->sk : NULL;
-	    if (sk) {
-		snprintf(buf, buf_len - 1, "socket:[family=%u:"
-			 "type=%u:protocol=%u]", sk->sk_family,
-			 sk->sk_type, sk->sk_protocol);
-	    } else {
-		snprintf(buf, buf_len - 1, "socket:[unknown]");
-	    }
-	    name = _xx_encode(buf);
-	    break;
-	}
-	/* For "socket:[\$]" and "pipe:[\$]". */
-	if (dentry->d_op && dentry->d_op->d_dname) {
-	    pos = dentry->d_op->d_dname(dentry, buf, buf_len - 1);
-	    if (IS_ERR(pos))
-		continue;
-	    name = _xx_encode(pos);
-	    break;
-	}
-	/* If we don't have a vfsmount, we can't calculate. */
-	if (!path->mnt)
-	    break;
-	/* go to whatever namespace root we are under */
-	pos = __d_path(path, &ns_root, buf, buf_len);
-	/* Prepend "/proc" prefix if using internal proc vfs mount. */
-	if (!IS_ERR(pos) && (path->mnt->mnt_flags & MNT_INTERNAL) &&
-	    (path->mnt->mnt_sb->s_magic == PROC_SUPER_MAGIC)) {
-	    pos -= 5;
-	    if (pos >= buf)
-		memcpy(pos, "/proc", 5);
-	    else
-		pos = ERR_PTR(-ENOMEM);
-	}
-	if (IS_ERR(pos))
-	    continue;
-	name = _xx_encode(pos);
-	break;
+        struct path ns_root = { .mnt = NULL, .dentry = NULL };
+        char *pos;
+        buf_len <<= 1;
+        kfree(buf);
+        buf = kmalloc(buf_len, GFP_NOFS);
+        if (!buf)
+            break;
+        /* Get better name for socket. */
+        if (dentry->d_sb && dentry->d_sb->s_magic == SOCKFS_MAGIC) {
+            struct inode *inode = dentry->d_inode;
+            struct socket *sock = inode ? SOCKET_I(inode) : NULL;
+            struct sock *sk = sock ? sock->sk : NULL;
+            if (sk) {
+                snprintf(buf, buf_len - 1, "socket:[family=%u:"
+                         "type=%u:protocol=%u]", sk->sk_family,
+                         sk->sk_type, sk->sk_protocol);
+            } else {
+                snprintf(buf, buf_len - 1, "socket:[unknown]");
+            }
+            name = _xx_encode(buf);
+            break;
+        }
+        /* For "socket:[\$]" and "pipe:[\$]". */
+        if (dentry->d_op && dentry->d_op->d_dname) {
+            pos = dentry->d_op->d_dname(dentry, buf, buf_len - 1);
+            if (IS_ERR(pos))
+                continue;
+            name = _xx_encode(pos);
+            break;
+        }
+        /* If we don't have a vfsmount, we can't calculate. */
+        if (!path->mnt)
+            break;
+        /* go to whatever namespace root we are under */
+        pos = __d_path(path, &ns_root, buf, buf_len);
+        /* Prepend "/proc" prefix if using internal proc vfs mount. */
+        if (!IS_ERR(pos) && (path->mnt->mnt_flags & MNT_INTERNAL) &&
+            (path->mnt->mnt_sb->s_magic == PROC_SUPER_MAGIC)) {
+            pos -= 5;
+            if (pos >= buf)
+                memcpy(pos, "/proc", 5);
+            else
+                pos = ERR_PTR(-ENOMEM);
+        }
+        if (IS_ERR(pos))
+            continue;
+        name = _xx_encode(pos);
+        break;
     }
     kfree(buf);
     if (!name)
-	_xx_warn_oom(__func__);
+        _xx_warn_oom(__func__);
     else if (is_dir && *name) {
-	/* Append trailing '/' if dentry is a directory. */
-	char *pos = name + strlen(name) - 1;
-	if (*pos != '/')
-	    /*
-	     * This is OK because tomoyo_encode() reserves space
-	     * for appending "/".
-	     */
-	    *++pos = '/';
+        /* Append trailing '/' if dentry is a directory. */
+        char *pos = name + strlen(name) - 1;
+        if (*pos != '/')
+            /*
+             * This is OK because tomoyo_encode() reserves space
+             * for appending "/".
+             */
+            *++pos = '/';
     }
     return name;
 }
 
 int _xx_realpath_from_path(struct path *path, char *newname, int newname_len)
 {
-    char *str;
+	char *str;
 
-    str = _xx_realpath_from_path_tmp(path);
-    if(!str) {
-	return -1;
-    } else {
-	strncpy(newname, str, newname_len-1);
-	newname[newname_len-1] = '\0';
-	kfree(str);
-    }
+	str = _xx_realpath_from_path_tmp(path);
+	if(!str) {
+		return -1;
+	} else {
+		strncpy(newname, str, newname_len-1);
+		newname[newname_len-1] = '\0';
+		kfree(str);
+	}
 
-    return 0;
+	return 0;
 }
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0))
+static char *_xx_get_dentry_path(struct dentry *dentry, char * const buffer,
+				    const int buflen)
+{
+	char *pos = ERR_PTR(-ENOMEM);
+	if (buflen >= 256) {
+		pos = dentry_path_raw(dentry, buffer, buflen - 1);
+		if (!IS_ERR(pos) && *pos == '/' && pos[1]) {
+			struct inode *inode = dentry->d_inode;
+			if (inode && S_ISDIR(inode->i_mode)) {
+				buffer[buflen - 2] = '/';
+				buffer[buflen - 1] = '\0';
+			}
+		}
+	}
+	return pos;
+}
+static char *_xx_get_absolute_path(struct path *path, char * const buffer,
+				      const int buflen)
+{
+	char *pos = ERR_PTR(-ENOMEM);
+	if (buflen >= 256) {
+		/* go to whatever namespace root we are under */
+		pos = d_absolute_path(path, buffer, buflen - 1);
+		if (!IS_ERR(pos) && *pos == '/' && pos[1]) {
+			struct inode *inode = path->dentry->d_inode;
+			if (inode && S_ISDIR(inode->i_mode)) {
+				buffer[buflen - 2] = '/';
+				buffer[buflen - 1] = '\0';
+			}
+		}
+	}
+	return pos;
+}
+static char *_xx_get_local_path(struct dentry *dentry, char * const buffer,
+				   const int buflen)
+{
+	struct super_block *sb = dentry->d_sb;
+	char *pos = _xx_get_dentry_path(dentry, buffer, buflen);
+	if (IS_ERR(pos))
+		return pos;
+	/* Convert from $PID to self if $PID is current thread. */
+	if (sb->s_magic == PROC_SUPER_MAGIC && *pos == '/') {
+		char *ep;
+		const pid_t pid = (pid_t) simple_strtoul(pos + 1, &ep, 10);
+		if (*ep == '/' && pid && pid ==
+		    task_tgid_nr_ns(current, sb->s_fs_info)) {
+			pos = ep - 5;
+			if (pos < buffer)
+				goto out;
+			memmove(pos, "/self", 5);
+		}
+		goto prepend_filesystem_name;
+	}
+	/* Use filesystem name for unnamed devices. */
+	if (!MAJOR(sb->s_dev))
+		goto prepend_filesystem_name;
+	{
+		struct inode *inode = sb->s_root->d_inode;
+		/*
+		 * Use filesystem name if filesystem does not support rename()
+		 * operation.
+		 */
+		if (inode->i_op && !inode->i_op->rename)
+			goto prepend_filesystem_name;
+	}
+	/* Prepend device name. */
+	{
+		char name[64];
+		int name_len;
+		const dev_t dev = sb->s_dev;
+		name[sizeof(name) - 1] = '\0';
+		snprintf(name, sizeof(name) - 1, "dev(%u,%u):", MAJOR(dev),
+			 MINOR(dev));
+		name_len = strlen(name);
+		pos -= name_len;
+		if (pos < buffer)
+			goto out;
+		memmove(pos, name, name_len);
+		return pos;
+	}
+	/* Prepend filesystem name. */
+prepend_filesystem_name:
+	{
+		const char *name = sb->s_type->name;
+		const int name_len = strlen(name);
+		pos -= name_len + 1;
+		if (pos < buffer)
+			goto out;
+		memmove(pos, name, name_len);
+		pos[name_len] = ':';
+	}
+	return pos;
+out:
+	return ERR_PTR(-ENOMEM);
+}
+static char *_xx_get_socket_name(struct path *path, char * const buffer,
+				    const int buflen)
+{
+	struct inode *inode = path->dentry->d_inode;
+	struct socket *sock = inode ? SOCKET_I(inode) : NULL;
+	struct sock *sk = sock ? sock->sk : NULL;
+	if (sk) {
+		snprintf(buffer, buflen, "socket:[family=%u:type=%u:"
+			 "protocol=%u]", sk->sk_family, sk->sk_type,
+			 sk->sk_protocol);
+	} else {
+		snprintf(buffer, buflen, "socket:[unknown]");
+	}
+	return buffer;
+}
+static char *_xx_realpath_from_path_tmp(struct path *path)
+{
+	char *buf = NULL;
+	char *name = NULL;
+	unsigned int buf_len = PAGE_SIZE / 2;
+	struct dentry *dentry = path->dentry;
+	struct super_block *sb;
+	if (!dentry)
+		return NULL;
+	sb = dentry->d_sb;
+	while (1) {
+		char *pos;
+		struct inode *inode;
+		buf_len <<= 1;
+		kfree(buf);
+		buf = kmalloc(buf_len, GFP_NOFS);
+		if (!buf)
+			break;
+		/* To make sure that pos is '\0' terminated. */
+		buf[buf_len - 1] = '\0';
+		/* Get better name for socket. */
+		if (sb->s_magic == SOCKFS_MAGIC) {
+			pos = _xx_get_socket_name(path, buf, buf_len - 1);
+			goto encode;
+		}
+		/* For "pipe:[\$]". */
+		if (dentry->d_op && dentry->d_op->d_dname) {
+			pos = dentry->d_op->d_dname(dentry, buf, buf_len - 1);
+			goto encode;
+		}
+		inode = sb->s_root->d_inode;
+		/*
+		 * Get local name for filesystems without rename() operation
+		 * or dentry without vfsmount.
+		 */
+		if (!path->mnt || (inode->i_op && !inode->i_op->rename))
+			pos = _xx_get_local_path(path->dentry, buf,
+						    buf_len - 1);
+		/* Get absolute name for the rest. */
+		else {
+			pos = _xx_get_absolute_path(path, buf, buf_len - 1);
+			/*
+			 * Fall back to local name if absolute name is not
+			 * available.
+			 */
+			if (pos == ERR_PTR(-EINVAL))
+				pos = _xx_get_local_path(path->dentry, buf,
+							    buf_len - 1);
+		}
+encode:
+		if (IS_ERR(pos))
+			continue;
+		name = _xx_encode(pos);
+		break;
+	}
+	kfree(buf);
+	if (!name)
+		_xx_warn_oom(__func__);
+	return name;
+}
+int _xx_realpath_from_path(struct path *path, char *newname, int newname_len)
+{
+	char *str;
 
+	str = _xx_realpath_from_path_tmp(path);
+	if(!str) {
+		return -1;
+	} else {
+		strncpy(newname, str, newname_len-1);
+		newname[newname_len-1] = '\0';
+		kfree(str);
+	}
+
+	return 0;
+}
+#endif
 
 
 EXPORT_SYMBOL(_xx_realpath_from_path);
-
-
 
 
 static char *calc_hmac(char *plain_text, unsigned int plain_text_size,
@@ -280,6 +620,7 @@ EXPORT_SYMBOL(calc_hmac);
 /* device dependent ? */
 #define DEVICE_TYPE "usb_device"
 #define DEVICE_DRIVER_NAME "usb"
+#define MMC_DRIVER_NAME "mmcblk"
 
 enum inter_bus {USB, MMC, NONE};
 
@@ -287,6 +628,7 @@ enum req_stat {
 	SEARCH_MN_NUM,
 	SEARCH_MN_FOUND,
 	SEARCH_USB_DESCRIPTOR,
+	SEARCH_MMC_DESCRIPTOR,
 	SEARCH_FOUND,
 };
 
@@ -303,8 +645,11 @@ struct device_search_response {
 	struct device *dev;
 };
 
-//#define to_bus(obj) container_of(obj, struct bus_type_private, subsys.kobj)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
 #define to_bus(obj) container_of(obj, struct subsys_private, subsys.kobj)
+#else
+#define to_bus(obj) container_of(obj, struct bus_type_private, subsys.kobj)
+#endif
 
 static int is_usb_device_root(struct device *dev)
 {
@@ -314,6 +659,16 @@ static int is_usb_device_root(struct device *dev)
 
 	if((!strcmp(dev->type->name, DEVICE_TYPE)) &&
 		(!strcmp(dev->driver->name, DEVICE_DRIVER_NAME))) {
+		return 1;
+	}
+	return 0;
+}
+
+static int is_mmc_device_root(struct device *dev)
+{
+	if(!dev->driver) return 0;
+
+	if(!strcmp(dev->driver->name, MMC_DRIVER_NAME)) {
 		return 1;
 	}
 	return 0;
@@ -335,13 +690,17 @@ static int match_mn_num(struct device *dev, void *data)
 		if( (req->major == MAJOR(dev->devt)) && (req->minor == MINOR(dev->devt)) ) {
 			req->dev = dev;
 			if(req->bus == USB) {req->stat = SEARCH_USB_DESCRIPTOR; }
-			if(req->bus == MMC) {req->stat = SEARCH_FOUND;}
+			if(req->bus == MMC) {req->stat = SEARCH_MMC_DESCRIPTOR; }
 		}
 	}
 
 	device_for_each_child(dev, data, match_mn_num);
 
 	if(req->stat == SEARCH_USB_DESCRIPTOR && is_usb_device_root(dev)) {
+		req->dev = dev;
+		req->stat = SEARCH_FOUND;
+	}
+	if(req->stat == SEARCH_MMC_DESCRIPTOR && is_mmc_device_root(dev)) {
 		req->dev = dev;
 		req->stat = SEARCH_FOUND;
 	}
@@ -357,7 +716,11 @@ static int device_find_mn_num(struct device_search_request *req, struct device_s
 	kset_get(bus_kset);
 	list_for_each(p, &(bus_kset->list)) {
 		struct kobject *bus_kobj = container_of(p, struct kobject, entry);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
 		struct subsys_private *pbus = to_bus(bus_kobj);
+#else
+		struct bus_type_private *pbus = to_bus(bus_kobj);
+#endif
 
 		req->stat = SEARCH_MN_NUM;
 		req->bus = NONE;
@@ -560,6 +923,41 @@ static int sealime_bprm_secureexec(struct linux_binprm *bprm)
 	return r;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
+static int sealime_path_truncate(struct path *path)
+#else
+static int sealime_path_truncate(struct path *path, loff_t length, unsigned int time_attrs)
+#endif
+{
+	int r = 0;
+
+	if (lkm_secops) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
+		r = lkm_secops->path_truncate(path);
+#else
+		r = lkm_secops->path_truncate(path, length, time_attrs);
+#endif
+	}
+
+	if(r != 0) {
+		return r;
+	}
+
+	if(extra_secops && extra_secops->path_truncate) {
+		PRINTK(KERN_INFO "[SEAndroid_Lime] run extra hook: path_truncate\n");
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)
+		r = extra_secops->path_truncate(path);
+#else
+		r = extra_secops->path_truncate(path, length, time_attrs);
+#endif
+		PRINTK(KERN_INFO "[SEAndroid_Lime] return extra hook: path_truncate = %d\n", r);
+	}
+
+	return r;
+}
+
+
+
 static int sealime_path_mknod(struct path *path, struct dentry *dentry,
 			      int mode, unsigned int dev)
 {
@@ -667,6 +1065,7 @@ static int sealime_init_module(const char *image, unsigned long len)
 	return r;
 }
 
+#ifdef CONFIG_SECURITY_SEALIME_WIFI_ASSOCIATE
 static int sealime_wifi_associate(const char *ifname, const char *bssid, const char *ssid, int ssid_len)
 {
 	int r = 0;
@@ -686,15 +1085,17 @@ static int sealime_wifi_associate(const char *ifname, const char *bssid, const c
 
 	return r;
 }
-
+#endif
 static int sealime_task_prctl(int option, unsigned long arg2,
 			      unsigned long arg3, unsigned long arg4,
 			      unsigned long arg5)
 {
-	int r = cap_task_prctl(option, arg2, arg3, arg3, arg5);
+	int r = 0;
 
 	if (lkm_secops) {
 		r = lkm_secops->task_prctl(option, arg2, arg3, arg4,arg5);
+	} else {
+		r = cap_task_prctl(option, arg2, arg3, arg3, arg5);
 	}
 
 	if(r == -EPERM) {
@@ -756,6 +1157,69 @@ static int sealime_path_mkdir(struct path *dir, struct dentry *dentry, int mode)
 	return r;
 }
 
+static int sealime_path_rmdir(struct path *dir, struct dentry *dentry)
+{
+	int r = 0;
+
+	if (lkm_secops) {
+		r = lkm_secops->path_rmdir(dir, dentry);
+	}
+
+	if(r != 0) {
+		return r;
+	}
+
+	if(extra_secops && extra_secops->path_rmdir) {
+		PRINTK(KERN_INFO "[SEAndroid_Lime] run extra hook: path_rmdir\n");
+		r = extra_secops->path_rmdir(dir, dentry);
+		PRINTK(KERN_INFO "[SEAndroid_Lime] return extra hook: path_rmdir = %d\n", r);
+	}
+
+	return r;
+}
+
+static int sealime_path_symlink(struct path *dir, struct dentry *dentry, const char *old_name)
+{
+	int r = 0;
+
+	if (lkm_secops) {
+		r = lkm_secops->path_symlink(dir, dentry, old_name);
+	}
+
+	if(r != 0) {
+		return r;
+	}
+
+	if(extra_secops && extra_secops->path_symlink) {
+		PRINTK(KERN_INFO "[SEAndroid_Lime] run extra hook: path_symlink\n");
+		r = extra_secops->path_symlink(dir, dentry, old_name);
+		PRINTK(KERN_INFO "[SEAndroid_Lime] return extra hook: path_symlink = %d\n", r);
+	}
+
+	return 0;
+}
+
+static int sealime_path_link(struct dentry *old_dentry, struct path *new_dir, struct dentry *new_dentry)
+{
+	int r = 0;
+
+	if (lkm_secops) {
+		r = lkm_secops->path_link(old_dentry, new_dir, new_dentry);
+	}
+
+	if(r != 0) {
+		return r;
+	}
+
+	if(extra_secops && extra_secops->path_link) {
+		PRINTK(KERN_INFO "[SEAndroid_Lime] run extra hook: path_link\n");
+		r = extra_secops->path_link(old_dentry, new_dir, new_dentry);
+		PRINTK(KERN_INFO "[SEAndroid_Lime] return extra hook: path_link = %d\n", r);
+	}
+
+	return 0;
+}
+
 static int sealime_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	int r = 0;
@@ -778,7 +1242,7 @@ static int sealime_file_ioctl(struct file *file, unsigned int cmd, unsigned long
 }
 
 static int sealime_socket_connect (struct socket *sock,
-				   struct sockaddr *address, int addrlen)
+                                   struct sockaddr *address, int addrlen)
 {
 	int r = 0;
 
@@ -828,19 +1292,25 @@ static struct security_operations sealime_security_ops = {
 	.sb_pivotroot = sealime_sb_pivotroot,
 	.file_permission = sealime_file_permission,
 	.bprm_secureexec = sealime_bprm_secureexec,
+	.path_truncate = sealime_path_truncate,
 	.path_mknod = sealime_path_mknod,
 	.path_unlink = sealime_path_unlink,
 	.path_rename = sealime_path_rename,
+	.path_symlink = sealime_path_symlink,
+	.path_link = sealime_path_link,
 	.task_create = sealime_task_create,
 	.path_chroot = sealime_path_chroot,
 	.task_prctl = sealime_task_prctl,
 	.dentry_open = sealime_dentry_open,
 	.init_module = sealime_init_module,
-	.wifi_associate = sealime_wifi_associate,
 	.path_mkdir = sealime_path_mkdir,
+	.path_rmdir = sealime_path_rmdir,
 	.file_ioctl = sealime_file_ioctl,
 	.socket_connect = sealime_socket_connect,
 	.socket_accept = sealime_socket_accept,
+#ifdef CONFIG_SECURITY_SEALIME_WIFI_ASSOCIATE
+	.wifi_associate = sealime_wifi_associate,
+#endif
 };
 
 static int __init sealime_init(void)
@@ -888,5 +1358,6 @@ EXPORT_SYMBOL(register_sealime);
 EXPORT_SYMBOL(register_extra_hook);
 EXPORT_SYMBOL(__ptrace_unlink);
 EXPORT_SYMBOL(cap_task_prctl);
+
 
 security_initcall(sealime_init);

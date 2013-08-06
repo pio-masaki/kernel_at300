@@ -222,4 +222,6 @@ int regulator_mode_to_status(unsigned int);
 
 void *regulator_get_init_drvdata(struct regulator_init_data *reg_init_data);
 
+void regulator_use_count_dump(void);
+
 #endif

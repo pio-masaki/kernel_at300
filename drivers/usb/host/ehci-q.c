@@ -103,7 +103,7 @@ qh_update (struct ehci_hcd *ehci, struct ehci_qh *qh, struct ehci_qtd *qtd)
 	if (!(hw->hw_info1 & cpu_to_hc32(ehci, 1 << 14))) {
 		unsigned	is_out, epnum;
 
-		is_out = !(qtd->hw_token & cpu_to_hc32(ehci, 1 << 8));
+		is_out = qh->is_out;
 		epnum = (hc32_to_cpup(ehci, &hw->hw_info1) >> 8) & 0x0f;
 		if (unlikely (!usb_gettoggle (qh->dev, epnum, is_out))) {
 			hw->hw_token &= ~cpu_to_hc32(ehci, QTD_TOGGLE);
@@ -334,6 +334,7 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 	qh->qh_state = QH_STATE_COMPLETING;
 	stopped = (state == QH_STATE_IDLE);
 
+	ehci_sync_qh(ehci, qh);
  rescan:
 	last = NULL;
 	last_status = -EINPROGRESS;
@@ -367,6 +368,7 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 		if (qtd == end)
 			break;
 
+		ehci_sync_qtd(ehci, qtd);
 		/* hardware copies qtd out of qh overlay */
 		rmb ();
 		token = hc32_to_cpu(ehci, qtd->hw_token);
@@ -649,7 +651,7 @@ qh_urb_transaction (
 	/*
 	 * data transfer stage:  buffer setup
 	 */
-	i = urb->num_sgs;
+	i = urb->num_mapped_sgs;
 	if (len > 0 && i > 0) {
 		sg = urb->sg;
 		buf = sg_dma_address(sg);
@@ -946,6 +948,7 @@ done:
 	hw = qh->hw;
 	hw->hw_info1 = cpu_to_hc32(ehci, info1);
 	hw->hw_info2 = cpu_to_hc32(ehci, info2);
+	qh->is_out = !is_input;
 	usb_settoggle (urb->dev, usb_pipeendpoint (urb->pipe), !is_input, 1);
 	qh_refresh (ehci, qh);
 	return qh;
@@ -993,6 +996,12 @@ static void qh_link_async (struct ehci_hcd *ehci, struct ehci_qh *qh)
 
 	head->qh_next.qh = qh;
 	head->hw->hw_next = dma;
+
+	/*
+	 * flush qh descriptor into memory immediately,
+	 * see comments in qh_append_tds.
+	 * */
+	ehci_sync_mem();
 
 	qh_get(qh);
 	qh->xacterrs = 0;
@@ -1081,6 +1090,18 @@ static struct ehci_qh *qh_append_tds (
 			/* let the hc process these next qtds */
 			wmb ();
 			dummy->hw_token = token;
+
+			/*
+			 * Writing to dma coherent buffer on ARM may
+			 * be delayed to reach memory, so HC may not see
+			 * hw_token of dummy qtd in time, which can cause
+			 * the qtd transaction to be executed very late,
+			 * and degrade performance a lot. ehci_sync_mem
+			 * is added to flush 'token' immediatelly into
+			 * memory, so that ehci can execute the transaction
+			 * ASAP.
+			 * */
+			ehci_sync_mem();
 
 			urb->hcpriv = qh_get (qh);
 		}
@@ -1185,6 +1206,10 @@ static void end_unlink_async (struct ehci_hcd *ehci)
 		ehci->reclaim = NULL;
 		start_unlink_async (ehci, next);
 	}
+
+	if (ehci->has_synopsys_hc_bug)
+		ehci_writel(ehci, (u32) ehci->async->qh_dma,
+			    &ehci->regs->async_next);
 }
 
 /* makes sure the async qh will become idle */

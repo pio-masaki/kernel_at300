@@ -116,6 +116,7 @@ struct tps6591x {
 	struct irq_chip		irq_chip;
 	struct mutex		irq_lock;
 	int			irq_base;
+	int			irq_main;
 	u32			irq_en;
 	u8			mask_cache[3];
 	u8			mask_reg[3];
@@ -284,28 +285,24 @@ out:
 EXPORT_SYMBOL_GPL(tps6591x_update);
 
 static struct i2c_client *tps6591x_i2c_client;
-int tps6591x_power_off(void)
+static void tps6591x_power_off(void)
 {
 	struct device *dev = NULL;
-	int ret;
 
 	if (!tps6591x_i2c_client)
-		return -EINVAL;
+		return;
 
 	dev = &tps6591x_i2c_client->dev;
 
-	ret = tps6591x_set_bits(dev, TPS6591X_DEVCTRL, DEVCTRL_PWR_OFF_SEQ);
-	if (ret < 0)
-		return ret;
+	if (tps6591x_set_bits(dev, TPS6591X_DEVCTRL, DEVCTRL_PWR_OFF_SEQ) < 0)
+		return;
 
-	ret = tps6591x_clr_bits(dev, TPS6591X_DEVCTRL, DEVCTRL_DEV_ON);
-	if (ret < 0)
-		return ret;
-	ret = tps6591x_set_bits(dev, TPS6591X_DEVCTRL, DEV_OFF);
-	if (ret < 0)
-		return ret;
+	if (tps6591x_clr_bits(dev, TPS6591X_DEVCTRL, DEVCTRL_DEV_ON) < 0)
+		return;
 
-	return 0;
+	if (tps6591x_set_bits(dev, TPS6591X_DEVCTRL, DEV_OFF) < 0)
+		return;
+
 }
 
 static int tps6591x_gpio_get(struct gpio_chip *gc, unsigned offset)
@@ -363,6 +360,7 @@ static int tps6591x_gpio_output(struct gpio_chip *gc, unsigned offset,
 	if (ret)
 		return ret;
 
+	//reg_val &= ~0x1;
 	val = (value & 0x1) | 0x4;
 	reg_val = reg_val | val;
 	return __tps6591x_write(tps6591x->client, TPS6591X_GPIO_BASE_ADDR +
@@ -518,6 +516,17 @@ static int tps6591x_irq_set_type(struct irq_data *irq_data, unsigned int type)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int tps6591x_irq_set_wake(struct irq_data *irq_data, unsigned int on)
+{
+	struct tps6591x *tps6591x = irq_data_get_irq_chip_data(irq_data);
+	return irq_set_irq_wake(tps6591x->irq_main, on);
+}
+#else
+#define tps6591x_irq_set_wake NULL
+#endif
+
+
 static irqreturn_t tps6591x_irq(int irq, void *data)
 {
 	struct tps6591x *tps6591x = data;
@@ -589,6 +598,7 @@ static int __devinit tps6591x_irq_init(struct tps6591x *tps6591x, int irq,
 		tps6591x_write(tps6591x->dev, TPS6591X_INT_STS + 2*i, 0xff);
 
 	tps6591x->irq_base = irq_base;
+	tps6591x->irq_main = irq;
 
 	tps6591x->irq_chip.name = "tps6591x";
 	tps6591x->irq_chip.irq_mask = tps6591x_irq_mask;
@@ -596,6 +606,7 @@ static int __devinit tps6591x_irq_init(struct tps6591x *tps6591x, int irq,
 	tps6591x->irq_chip.irq_bus_lock = tps6591x_irq_lock;
 	tps6591x->irq_chip.irq_bus_sync_unlock = tps6591x_irq_sync_unlock;
 	tps6591x->irq_chip.irq_set_type = tps6591x_irq_set_type;
+	tps6591x->irq_chip.irq_set_wake = tps6591x_irq_set_wake;
 
 	for (i = 0; i < ARRAY_SIZE(tps6591x_irqs); i++) {
 		int __irq = i + tps6591x->irq_base;
@@ -843,6 +854,9 @@ static int __devinit tps6591x_i2c_probe(struct i2c_client *client,
 	tps6591x_debuginit(tps6591x);
 
 	tps6591x_sleepinit(tps6591x, pdata);
+
+	if (pdata->use_power_off && !pm_power_off)
+		pm_power_off = tps6591x_power_off;
 
 	tps6591x_i2c_client = client;
 

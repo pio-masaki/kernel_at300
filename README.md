@@ -3,7 +3,7 @@ kernel_at300
 
 Kernel source for the Toshiba Excite 10" AT300 from Toshiba JP
 
-This is the ICS 4.0.3 source branch.
+This is the JB 4.1.1 source branch.
 
 	Linux kernel release 2.6.xx <http://kernel.org/>
 

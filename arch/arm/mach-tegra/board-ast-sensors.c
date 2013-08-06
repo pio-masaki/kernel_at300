@@ -37,25 +37,15 @@
 #include <linux/regulator/consumer.h>
 #include <linux/clk.h>
 #include <linux/slab.h>
-#ifdef CONFIG_SENSORS_NCT1008
 #include <linux/nct1008.h>
 #ifdef CONFIG_TEGRA_EDP_LIMITS
 #include <mach/edp.h>
 #include <mach/thermal.h>
 #endif
-#endif
-#ifdef CONFIG_MPU_SENSORS_MPU3050
 #include <linux/mpu.h>
-#endif
-#ifdef CONFIG_VIDEO_MT9P111
 #include <media/mt9p111.h>
-#endif
-#ifdef CONFIG_VIDEO_MT9D115
 #include <media/mt9d115.h>
-#endif
-#ifdef CONFIG_TORCH_TPS61050
 #include <media/tps61050.h>
-#endif
 
 #include "gpio-names.h"
 #include "board-ast.h"
@@ -63,19 +53,7 @@
 
 #include <asm/mach-types.h>
 
-#define AST_TEMP_ALERT       TEGRA_GPIO_PCC2
-
-#define AST_CAM1_PWDN        TEGRA_GPIO_PBB5
-#define AST_CAM2_PWDN        TEGRA_GPIO_PBB6
-#define AST_CAM1_RST         TEGRA_GPIO_PBB3
-#define AST_CAM2_RST         TEGRA_GPIO_PBB0
-#define AST_CAM2_LED         TEGRA_GPIO_PU4
-
-#define CAM1_MCLK_RATE  24000000
-#define CAM2_MCLK_RATE  24000000
-
-static struct regulator *ast_vddio_cam = NULL;
-static struct regulator *ast_avdd_cam = NULL;
+static struct regulator *ast_vddio_vi = NULL;
 static struct regulator *ast_vddio_1v8_cam1 = NULL;
 static struct regulator *ast_vdd_1v8_cam2 = NULL;
 static struct regulator *ast_avdd_2v8_cam1 = NULL;
@@ -90,17 +68,17 @@ static int ast_mt9d115_led_state = 0;
 
 static int ast_camera_mclk_on(int rate)
 {
-	if (!ast_vddio_cam) {
-		ast_vddio_cam = regulator_get(NULL, "vdd_gen1v8");
-		if (WARN_ON(IS_ERR(ast_vddio_cam))) {
-			pr_err("%s: couldn't get regulator vdd_gen1v8: %ld\n",
-			       __func__, PTR_ERR(ast_vddio_cam));
-			ast_vddio_cam = NULL;
+	if (!ast_vddio_vi) {
+		ast_vddio_vi = regulator_get(NULL, "vddio_vi");
+		if (WARN_ON(IS_ERR(ast_vddio_vi))) {
+			pr_err("%s: couldn't get regulator vddio_vi: %ld\n",
+			       __func__, PTR_ERR(ast_vddio_vi));
+			ast_vddio_vi = NULL;
 			return -ENODEV;
 		}
 	}
 
-	regulator_enable(ast_vddio_cam);
+	regulator_enable(ast_vddio_vi);
 	if (!vi_sensor_clk) {
 		vi_sensor_clk = clk_get_sys("tegra_camera", "vi_sensor");
 		if (IS_ERR_OR_NULL(vi_sensor_clk)) {
@@ -142,8 +120,8 @@ static int ast_camera_mclk_off(void)
 		vi_sensor_clk = NULL;
 	}
 
-	if (ast_vddio_cam)
-		regulator_disable(ast_vddio_cam);
+	if (ast_vddio_vi)
+		regulator_disable(ast_vddio_vi);
 
 	return 0;
 }
@@ -153,27 +131,7 @@ static int ast_mt9p111_init(void)
 {
 	int err;
 
-	if (!ast_avdd_cam) {
-		ast_avdd_cam = regulator_get(NULL, "vdd_3v3_cam");
-		if (WARN_ON(IS_ERR(ast_avdd_cam))) {
-			pr_err("%s: couldn't get regulator vdd_3v3_cam: %ld\n",
-			       __func__, PTR_ERR(ast_avdd_cam));
-			ast_avdd_cam = NULL;
-			return -ENODEV;
-		}
-	}
-
 	if (machine_is_titan()) {
-		if (!ast_vddio_cam) {
-			ast_vddio_cam = regulator_get(NULL, "vdd_gen1v8");
-			if (WARN_ON(IS_ERR(ast_vddio_cam))) {
-				pr_err("%s: couldn't get regulator vdd_gen1v8: %ld\n",
-				       __func__, PTR_ERR(ast_vddio_cam));
-				ast_vddio_cam = NULL;
-				return -ENODEV;
-			}
-		}
-
 		if (!ast_vdd_3v3_cam1) {
 			ast_vdd_3v3_cam1 = regulator_get(NULL, "vdd_3v3_cam1");
 			if (WARN_ON(IS_ERR(ast_vdd_3v3_cam1))) {
@@ -227,18 +185,18 @@ static int ast_mt9p111_init(void)
 		}
 	}
 
-	err = gpio_request(AST_CAM1_PWDN, "cam1_power_down");
+	err = gpio_request(CAM1_PWDN_GPIO, "cam1_power_down");
 	if (err < 0)
 		return err;
 
-	gpio_direction_output(AST_CAM1_PWDN, 0);
-	tegra_gpio_enable(AST_CAM1_PWDN);
-	err = gpio_request(AST_CAM1_RST, "cam1_reset");
+	gpio_direction_output(CAM1_PWDN_GPIO, 0);
+	tegra_gpio_enable(CAM1_PWDN_GPIO);
+	err = gpio_request(CAM1_RST_GPIO, "cam1_reset");
 	if (err < 0)
 		return err;
 
-	gpio_direction_output(AST_CAM1_RST, 0);
-	tegra_gpio_enable(AST_CAM1_RST);
+	gpio_direction_output(CAM1_RST_GPIO, 0);
+	tegra_gpio_enable(CAM1_RST_GPIO);
 
 	return 0;
 }
@@ -246,36 +204,31 @@ static int ast_mt9p111_init(void)
 static int ast_mt9p111_power_on(void)
 {
 	if (machine_is_titan()) {
-		if (!ast_vddio_cam || !ast_avdd_cam || !ast_vddio_1v8_cam1 ||
-			!ast_avdd_2v8_cam1 || !ast_vdd_3v3_cam1)
+		if (!ast_vddio_1v8_cam1 || !ast_avdd_2v8_cam1 ||
+			!ast_vdd_3v3_cam1)
 			return -ENODEV;
 	} else {
-		if (!ast_avdd_cam || !ast_vddio_1v8_cam1 ||
-			!ast_avdd_2v8_cam1 || !ast_vdd_2v8_cam1)
+		if (!ast_vddio_1v8_cam1 || !ast_avdd_2v8_cam1 ||
+			!ast_vdd_2v8_cam1)
 			return -ENODEV;
 	}
 
 	if (machine_is_titan()) {
-		gpio_set_value(AST_CAM1_PWDN, 0);
-		regulator_enable(ast_vddio_cam);
 		regulator_enable(ast_vddio_1v8_cam1);
-		mdelay(1);
-		regulator_enable(ast_avdd_cam);
 		regulator_enable(ast_vdd_3v3_cam1);
 		regulator_enable(ast_avdd_2v8_cam1);
-		ast_camera_mclk_on(CAM1_MCLK_RATE);
-		mdelay(1);
-		gpio_set_value(AST_CAM1_RST, 1);
+		udelay(100);
+		gpio_set_value(CAM1_RST_GPIO, 1);
+		udelay(100);
+		ast_camera_mclk_on(24000000);
 	} else {
-		gpio_set_value(AST_CAM1_PWDN, 0);
-		regulator_enable(ast_avdd_cam);
 		regulator_enable(ast_vddio_1v8_cam1);
-		mdelay(1);
 		regulator_enable(ast_avdd_2v8_cam1);
 		regulator_enable(ast_vdd_2v8_cam1);
-		ast_camera_mclk_on(CAM1_MCLK_RATE);
-		mdelay(1);
-		gpio_set_value(AST_CAM1_RST, 1);
+		udelay(100);
+		gpio_set_value(CAM1_RST_GPIO, 1);
+		udelay(100);
+		ast_camera_mclk_on(24000000);
 	}
 
 	return 0;
@@ -284,40 +237,27 @@ static int ast_mt9p111_power_on(void)
 static int ast_mt9p111_power_off(void)
 {
 	if (machine_is_titan()) {
-		if (!ast_vddio_cam || !ast_avdd_cam || !ast_vddio_1v8_cam1 ||
-			!ast_avdd_2v8_cam1 || !ast_vdd_3v3_cam1)
+		if (!ast_vddio_1v8_cam1 || !ast_avdd_2v8_cam1 ||
+			!ast_vdd_3v3_cam1)
 			return -ENODEV;
 	} else {
-		if (!ast_avdd_cam || !ast_vddio_1v8_cam1 ||
-			!ast_avdd_2v8_cam1 || !ast_vdd_2v8_cam1)
+		if (!ast_vddio_1v8_cam1 || !ast_avdd_2v8_cam1 ||
+			!ast_vdd_2v8_cam1)
 			return -ENODEV;
 	}
 
 	if (machine_is_titan()) {
-		gpio_set_value(AST_CAM1_RST, 0);
-		mdelay(1);
-		gpio_set_value(AST_CAM1_PWDN, 1);
-		mdelay(1);
+		gpio_set_value(CAM1_RST_GPIO, 0);
+		ast_camera_mclk_off();
 		regulator_disable(ast_avdd_2v8_cam1);
 		regulator_disable(ast_vdd_3v3_cam1);
-		mdelay(1);
 		regulator_disable(ast_vddio_1v8_cam1);
-		regulator_disable(ast_avdd_cam);
-		regulator_disable(ast_vddio_cam);
-		ast_camera_mclk_off();
-		gpio_set_value(AST_CAM1_PWDN, 0);
 	} else {
-		gpio_set_value(AST_CAM1_RST, 0);
-		mdelay(1);
-		gpio_set_value(AST_CAM1_PWDN, 1);
-		mdelay(1);
+		gpio_set_value(CAM1_RST_GPIO, 0);
+		ast_camera_mclk_off();
 		regulator_disable(ast_vdd_2v8_cam1);
 		regulator_disable(ast_avdd_2v8_cam1);
-		mdelay(1);
 		regulator_disable(ast_vddio_1v8_cam1);
-		regulator_disable(ast_avdd_cam);
-		ast_camera_mclk_off();
-		gpio_set_value(AST_CAM1_PWDN, 0);
 	}
 
 	return 0;
@@ -334,26 +274,6 @@ struct mt9p111_platform_data ast_mt9p111_data = {
 static int ast_mt9d115_init(void)
 {
 	int err;
-
-	if (!ast_vddio_cam) {
-		ast_vddio_cam = regulator_get(NULL, "vdd_gen1v8");
-		if (WARN_ON(IS_ERR(ast_vddio_cam))) {
-			pr_err("%s: couldn't get regulator vdd_gen1v8: %ld\n",
-			       __func__, PTR_ERR(ast_vddio_cam));
-			ast_vddio_cam = NULL;
-			return -ENODEV;
-		}
-	}
-
-	if (!ast_avdd_cam) {
-		ast_avdd_cam = regulator_get(NULL, "vdd_3v3_cam");
-		if (WARN_ON(IS_ERR(ast_avdd_cam))) {
-			pr_err("%s: couldn't get regulator vdd_3v3_cam: %ld\n",
-			       __func__, PTR_ERR(ast_avdd_cam));
-			ast_avdd_cam = NULL;
-			return -ENODEV;
-		}
-	}
 
 	if (!ast_vdd_1v8_cam2) {
 		ast_vdd_1v8_cam2 = regulator_get(NULL, "vdd_1v8_cam2");
@@ -385,81 +305,71 @@ static int ast_mt9d115_init(void)
 		}
 	}
 
-	err = gpio_request(AST_CAM2_PWDN, "cam2_power_down");
+	err = gpio_request(CAM2_PWDN_GPIO, "cam2_power_down");
 	if (err < 0)
 		return err;
 
-	gpio_direction_output(AST_CAM2_PWDN, 0);
-	tegra_gpio_enable(AST_CAM2_PWDN);
-	err = gpio_request(AST_CAM2_RST, "cam2_reset");
+	gpio_direction_output(CAM2_PWDN_GPIO, 0);
+	tegra_gpio_enable(CAM2_PWDN_GPIO);
+	err = gpio_request(CAM2_RST_GPIO, "cam2_reset");
 	if (err < 0)
 		return err;
 
-	gpio_direction_output(AST_CAM2_RST, 0);
-	tegra_gpio_enable(AST_CAM2_RST);
-	err = gpio_request(AST_CAM2_LED, "cam2_led");
+	gpio_direction_output(CAM2_RST_GPIO, 0);
+	tegra_gpio_enable(CAM2_RST_GPIO);
+	err = gpio_request(CAM2_LED_GPIO, "cam2_led");
 	if (err < 0)
 		return err;
 
-	gpio_direction_output(AST_CAM2_LED, 0);
-	tegra_gpio_enable(AST_CAM2_LED);
+	gpio_direction_output(CAM2_LED_GPIO, 0);
+	tegra_gpio_enable(CAM2_LED_GPIO);
 
 	return 0;
 }
 
 static void ast_mt9d115_led(int on)
 {
-        ast_mt9d115_led_state = on;
-	gpio_set_value(AST_CAM2_LED, on);
+	ast_mt9d115_led_state = on;
+	gpio_set_value(CAM2_LED_GPIO, on);
 }
 
-int ast_mt9d115_led_get_state ( void )
+int ast_mt9d115_led_get_state (void)
 {
-        return ( ast_mt9d115_led_state );
+    return ast_mt9d115_led_state;
 }
 
 static int ast_mt9d115_power_on(void)
 {
-	if (!ast_vddio_cam || !ast_avdd_cam || !ast_vdd_1v8_cam2 ||
-		!ast_vddio_1v8_cam2 || !ast_avdd_2v8_cam2)
+	if (!ast_vdd_1v8_cam2 || !ast_vddio_1v8_cam2 || !ast_avdd_2v8_cam2)
 		return -ENODEV;
 
-	gpio_set_value(AST_CAM2_PWDN, 0);
-	gpio_set_value(AST_CAM2_RST, 1);
-	regulator_enable(ast_vddio_cam);
+	gpio_set_value(CAM2_RST_GPIO, 1);
 	regulator_enable(ast_vddio_1v8_cam2);
 	udelay(1200);
 	regulator_enable(ast_vdd_1v8_cam2);
-	mdelay(1);
-	ast_camera_mclk_on(CAM2_MCLK_RATE);
-	mdelay(1);
-	gpio_set_value(AST_CAM2_RST, 0);
-	mdelay(1);
-	gpio_set_value(AST_CAM2_RST, 1);
-	mdelay(1);
-	regulator_enable(ast_avdd_cam);
+	udelay(200);
+	ast_camera_mclk_on(24000000);
+	udelay(1);
+	gpio_set_value(CAM2_RST_GPIO, 0);
+	udelay(1);
+	gpio_set_value(CAM2_RST_GPIO, 1);
+	udelay(1);
 	regulator_enable(ast_avdd_2v8_cam2);
+	udelay(300);
 
 	return 0;
 }
 
 static int ast_mt9d115_power_off(void)
 {
-	if (!ast_vddio_cam || !ast_avdd_cam || !ast_vdd_1v8_cam2 ||
-		!ast_vddio_1v8_cam2 || !ast_avdd_2v8_cam2)
+	if (!ast_vdd_1v8_cam2 || !ast_vddio_1v8_cam2 || !ast_avdd_2v8_cam2)
 		return -ENODEV;
 
-	gpio_set_value(AST_CAM2_RST, 0);
-	mdelay(1);
-	gpio_set_value(AST_CAM2_PWDN, 1);
-	mdelay(1);
+	gpio_set_value(CAM2_RST_GPIO, 0);
+	ast_camera_mclk_off();
 	regulator_disable(ast_avdd_2v8_cam2);
 	regulator_disable(ast_vdd_1v8_cam2);
 	regulator_disable(ast_vddio_1v8_cam2);
-	regulator_disable(ast_avdd_cam);
-	regulator_disable(ast_vddio_cam);
-	ast_camera_mclk_off();
-	gpio_set_value(AST_CAM2_PWDN, 0);
 
 	return 0;
 }
@@ -505,75 +415,100 @@ static const struct i2c_board_info ast_i2c2_cam_board_info[] = {
 #endif
 };
 
-#ifndef CONFIG_TEGRA_INTERNAL_TSENSOR_EDP_SUPPORT
 static int nct_get_temp(void *_data, long *temp)
 {
-       struct nct1008_data *data = _data;
-       return nct1008_thermal_get_temp(data, temp);
+	struct nct1008_data *data = _data;
+	return nct1008_thermal_get_temp(data, temp);
 }
 
 static int nct_get_temp_low(void *_data, long *temp)
 {
-    struct nct1008_data *data = _data;
-    return nct1008_thermal_get_temp_low(data, temp);
+	struct nct1008_data *data = _data;
+	return nct1008_thermal_get_temp_low(data, temp);
 }
 
 static int nct_set_limits(void *_data,
-                       long lo_limit_milli,
-                       long hi_limit_milli)
+			long lo_limit_milli,
+			long hi_limit_milli)
 {
-       struct nct1008_data *data = _data;
-       return nct1008_thermal_set_limits(data,
-                                       lo_limit_milli,
-                                       hi_limit_milli);
+	struct nct1008_data *data = _data;
+	return nct1008_thermal_set_limits(data,
+					lo_limit_milli,
+					hi_limit_milli);
 }
 
 static int nct_set_alert(void *_data,
-                               void (*alert_func)(void *),
-                               void *alert_data)
+				void (*alert_func)(void *),
+				void *alert_data)
 {
-       struct nct1008_data *data = _data;
-       return nct1008_thermal_set_alert(data, alert_func, alert_data);
+	struct nct1008_data *data = _data;
+	return nct1008_thermal_set_alert(data, alert_func, alert_data);
 }
 
 static int nct_set_shutdown_temp(void *_data, long shutdown_temp)
 {
-       struct nct1008_data *data = _data;
-       return nct1008_thermal_set_shutdown_temp(data, shutdown_temp);
+	struct nct1008_data *data = _data;
+	return nct1008_thermal_set_shutdown_temp(data, shutdown_temp);
 }
-static void nct1008_probe_callback(struct nct1008_data *data)
+
+#ifdef CONFIG_TEGRA_SKIN_THROTTLE
+static int nct_get_itemp(void *dev_data, long *temp)
 {
-       struct tegra_thermal_device *thermal_device;
-
-       thermal_device = kzalloc(sizeof(struct tegra_thermal_device),
-                                       GFP_KERNEL);
-       if (!thermal_device) {
-               pr_err("unable to allocate thermal device\n");
-               return;
-       }
-
-       thermal_device->name = "nct1008";
-       thermal_device->data = data;
-       thermal_device->offset = TDIODE_OFFSET;
-       thermal_device->get_temp = nct_get_temp;
-       thermal_device->get_temp_low = nct_get_temp_low;
-       thermal_device->set_limits = nct_set_limits;
-       thermal_device->set_alert = nct_set_alert;
-       thermal_device->set_shutdown_temp = nct_set_shutdown_temp;
-
-       tegra_thermal_set_device(thermal_device);
+	struct nct1008_data *data = dev_data;
+	return nct1008_thermal_get_temps(data, NULL, temp);
 }
 #endif
 
+static void nct1008_probe_callback(struct nct1008_data *data)
+{
+	struct tegra_thermal_device *ext_nct;
+
+	ext_nct = kzalloc(sizeof(struct tegra_thermal_device),
+					GFP_KERNEL);
+	if (!ext_nct) {
+		pr_err("unable to allocate thermal device\n");
+		return;
+	}
+
+	ext_nct->name = "nct_ext";
+	ext_nct->id = THERMAL_DEVICE_ID_NCT_EXT;
+	ext_nct->data = data;
+	ext_nct->offset = TDIODE_OFFSET;
+	ext_nct->get_temp = nct_get_temp;
+	ext_nct->get_temp_low = nct_get_temp_low;
+	ext_nct->set_limits = nct_set_limits;
+	ext_nct->set_alert = nct_set_alert;
+	ext_nct->set_shutdown_temp = nct_set_shutdown_temp;
+
+	tegra_thermal_device_register(ext_nct);
+
+#ifdef CONFIG_TEGRA_SKIN_THROTTLE
+	{
+		struct tegra_thermal_device *int_nct;
+		int_nct = kzalloc(sizeof(struct tegra_thermal_device),
+						GFP_KERNEL);
+		if (!int_nct) {
+			kfree(int_nct);
+			pr_err("unable to allocate thermal device\n");
+			return;
+		}
+
+		int_nct->name = "nct_int";
+		int_nct->id = THERMAL_DEVICE_ID_NCT_INT;
+		int_nct->data = data;
+		int_nct->get_temp = nct_get_itemp;
+
+		tegra_thermal_device_register(int_nct);
+	}
+#endif
+}
 #ifdef CONFIG_SENSORS_NCT1008
 static struct nct1008_platform_data ast_nct1008_pdata = {
 	.supported_hwrev = true,
 	.ext_range = true,
 	.conv_rate = 0x08,
 	.offset = 8, /* 4 * 2C. Bug 844025 - 1C for device accuracies */
-#ifndef CONFIG_TEGRA_INTERNAL_TSENSOR_EDP_SUPPORT
     .probe_callback = nct1008_probe_callback,
-#endif
 };
 
 static struct i2c_board_info ast_i2c4_nct1008_board_info[] = {
@@ -584,28 +519,30 @@ static struct i2c_board_info ast_i2c4_nct1008_board_info[] = {
 	}
 };
 
-static int ast_nct1008_init(void)
+static int __init ast_nct1008_init(void)
 {
 	int ret = 0;
 
 	/* FIXME: enable irq when throttling is supported */
-	ast_i2c4_nct1008_board_info[0].irq = TEGRA_GPIO_TO_IRQ(AST_TEMP_ALERT);
+	ast_i2c4_nct1008_board_info[0].irq = TEGRA_GPIO_TO_IRQ(TEMP_ALERT_GPIO);
 
-	ret = gpio_request(AST_TEMP_ALERT, "temp_alert");
+	ret = gpio_request(TEMP_ALERT_GPIO, "temp_alert");
 	if (ret < 0)
 		return ret;
 
-	ret = gpio_direction_input(AST_TEMP_ALERT);
+	ret = gpio_direction_input(TEMP_ALERT_GPIO);
 	if (ret < 0)
-		gpio_free(AST_TEMP_ALERT);
+		gpio_free(TEMP_ALERT_GPIO);
 	else
-		tegra_gpio_enable(AST_TEMP_ALERT);
+		tegra_gpio_enable(TEMP_ALERT_GPIO);
 
 	i2c_register_board_info(4, ast_i2c4_nct1008_board_info,
 				ARRAY_SIZE(ast_i2c4_nct1008_board_info));
 
 	return ret;
 }
+#else
+static int __init ast_nct1008_init(void) { return 0; }
 #endif
 
 #ifdef CONFIG_MPU_SENSORS_MPU3050
@@ -647,7 +584,7 @@ static struct i2c_board_info __initdata inv_mpu_i2c2_boardinfo[] = {
 	},
 };
 
-static void ast_mpuirq_init(void)
+static void __init ast_mpuirq_init(void)
 {
 	pr_info("*** MPU START *** ast_mpuirq_init...\n");
 	tegra_gpio_enable(AST_GYRO_INT);
@@ -668,6 +605,8 @@ static void ast_mpuirq_init(void)
 	i2c_register_board_info(2, inv_mpu_i2c2_boardinfo,
 		ARRAY_SIZE(inv_mpu_i2c2_boardinfo));
 }
+#else
+static void __init ast_mpuirq_init(void) { }
 #endif
 
 static struct i2c_board_info ast_i2c2_isl_board_info[] = {
@@ -684,13 +623,8 @@ int __init ast_sensors_init(void)
 		i2c_register_board_info(2, ast_i2c2_cam_board_info,
 					ARRAY_SIZE(ast_i2c2_cam_board_info));
 
-#ifdef CONFIG_SENSORS_NCT1008
 	ast_nct1008_init();
-#endif
-
-#ifdef CONFIG_MPU_SENSORS_MPU3050
 	ast_mpuirq_init();
-#endif
 
 	return 0;
 }

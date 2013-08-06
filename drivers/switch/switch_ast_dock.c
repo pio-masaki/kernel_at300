@@ -38,8 +38,7 @@
 
 struct tegra_dock_dev
 {
-	struct task_struct	    *task;
-	struct switch_dev       sdev;
+	struct switch_dev sdev;
 	struct early_suspend dock_early_suspend;
     int dock_on_pin;
     int dock_amp_enb_pin;
@@ -48,7 +47,6 @@ struct tegra_dock_dev
 	struct notifier_block ac_dock_notifier;
 };
 
-static struct tegra_dock_dev *dock_dev;
 static BLOCKING_NOTIFIER_HEAD(ast_dock_notifier);
 
 int ast_dock_notifier_register(struct notifier_block *nb)
@@ -71,21 +69,14 @@ static void nvdock_detect_worker(struct work_struct *work)
 
 	value = !gpio_get_value(dock->dock_on_pin);
     switch_set_state(&dock->sdev, value);
-	if(value) 
-	{
-		ac_value=gpio_get_value(dock->ac_dock_pin);
-		if(ac_value)
-		{
-			/* dock inserted */
+	if (value) {                /* device on dock */
+		ac_value = gpio_get_value(dock->ac_dock_pin);
+		if (ac_value) {         /* AC adapter is inserted */
 			gpio_direction_output(dock->dock_amp_enb_pin, 1);
-		}
-		else
-		{
+		} else {                /* AC adapter is removed */
 			gpio_direction_output(dock->dock_amp_enb_pin, 0);
 		}
-	} 
-	else 
-	{                    /* dock removed */
+	} else {                    /* device not on dock */
         gpio_direction_output(dock->dock_amp_enb_pin, 0);
 	}
 	
@@ -104,24 +95,20 @@ static irqreturn_t nvdock_irq(int irq, void *data)
 
 static int ac_dock_notify(struct notifier_block *nb, unsigned long state, void *unused)
 {
+    struct tegra_dock_dev *dock =
+        container_of(nb, struct tegra_dock_dev, ac_dock_notifier);
 	int value;
 	
-	value = !gpio_get_value(dock_dev->dock_on_pin);
+	value = !gpio_get_value(dock->dock_on_pin);
 	
-	if(value)
-	{
-		if (state) 
-		{   /* ac inserted */
-			gpio_direction_output(dock_dev->dock_amp_enb_pin, 1);
-		} 
-		else 
-		{   /* ac removed */
-			gpio_direction_output(dock_dev->dock_amp_enb_pin, 0);
+	if (value) {                /* device on dock */
+		if (state) {   /* ac inserted */
+			gpio_direction_output(dock->dock_amp_enb_pin, 1);
+		} else {   /* ac removed */
+			gpio_direction_output(dock->dock_amp_enb_pin, 0);
 		}
-	}
-	else
-	{
-		gpio_direction_output(dock_dev->dock_amp_enb_pin, 0);
+	} else {                    /* device not on dock */
+		gpio_direction_output(dock->dock_amp_enb_pin, 0);
 	}
     
     return NOTIFY_OK;
@@ -129,18 +116,24 @@ static int ac_dock_notify(struct notifier_block *nb, unsigned long state, void *
 
 static ssize_t dock_print_state(struct switch_dev *sdev, char *buf)
 {
-	return sprintf(buf, "%d\n", !gpio_get_value(dock_dev->dock_on_pin));
+    struct tegra_dock_dev *dock =
+        container_of(sdev, struct tegra_dock_dev, sdev);
+
+	return sprintf(buf, "%d\n", !gpio_get_value(dock->dock_on_pin));
 }
 
 static void tegra_dock_early_suspend(struct early_suspend *h)
 {
-    return ;
+    return;
 }
 
 static void tegra_dock_late_resume(struct early_suspend *h)
 {
-    queue_delayed_work(system_nrt_wq, &dock_dev->work,
-			msecs_to_jiffies(40));
+    struct tegra_dock_dev *dock =
+        container_of(h, struct tegra_dock_dev, dock_early_suspend);
+
+    queue_delayed_work(system_nrt_wq, &dock->work,
+                       msecs_to_jiffies(40));
 
 	return;
 }
@@ -149,7 +142,6 @@ static int __devinit tegra_dock_probe(struct platform_device *pdev)
 {
 	struct dock_platform_data *pdata = pdev->dev.platform_data;
 	struct tegra_dock_dev *dock = NULL;
-    //int value;
 	int ret = 0;
 
     dock = kzalloc(sizeof(struct tegra_dock_dev), GFP_KERNEL);
@@ -157,8 +149,6 @@ static int __devinit tegra_dock_probe(struct platform_device *pdev)
 		printk("Fails to alloc dock device\n");
 		return -ENOMEM;
 	}
-
-    dock_dev = dock;
 
 	dock->dock_on_pin = pdata->dock_on_pin;
     dock->dock_amp_enb_pin = pdata->dock_amp_enb_pin;
@@ -202,8 +192,9 @@ static int __devinit tegra_dock_probe(struct platform_device *pdev)
     free_irq(pdata->irq, dock);
  fail_request_irq:
     gpio_free(dock->dock_on_pin);
+    gpio_free(dock->dock_amp_enb_pin);
 	kfree(dock);
-	dock=NULL;
+
 	return ret;
 }
 
@@ -217,8 +208,8 @@ static int __devexit tegra_dock_remove(struct platform_device *pdev)
     switch_dev_unregister(&dock->sdev);
     free_irq(pdata->irq, dock);
     gpio_free(dock->dock_on_pin);
+    gpio_free(dock->dock_amp_enb_pin);
 	kfree(dock);
-    dock_dev = NULL;
 
 	return 0;
 }

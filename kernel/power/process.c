@@ -151,7 +151,7 @@ static int try_to_freeze_tasks(bool sig_only)
 extern int is_boot_on_charging;
 int freeze_processes(void)
 {
-	int error;
+	int error=0;
 #ifdef CONFIG_CHARGING_IMAGE
 	if (!is_boot_on_charging) 
 #endif

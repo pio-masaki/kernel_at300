@@ -1,5 +1,5 @@
-#ifndef ___MT9D115_REG_H__
-#define ___MT9D115_REG_H__
+#ifndef __MT9D115_REG_H__
+#define __MT9D115_REG_H__
 
 /* max counter for retry I2C access */
 #define MT9D115_MAX_WAITMS              1
@@ -573,6 +573,9 @@ static struct mt9d115_reg mode_capture[] = {
 {MT9D115_REG, 0x098C, 0xA103},	/* MCU_ADDRESS [SEQ_CMD] */
 {MT9D115_REG, 0x0990, 0x0002},	/* MCU_DATA_0 */
 {MT9D115_POLL, 0xA104, 0x0007},
+#ifdef CONFIG_MACH_SPHINX
+{MT9D115_WAIT_MS, 0, 150},
+#endif
 {MT9D115_TABLE_END, 0, 0}
 };
 
@@ -679,7 +682,7 @@ static struct mt9d115_reg mode_init[] = {
 {MT9D115_REG, 0x098C, 0x274D},	/* MCU_ADDRESS [MODE_CROP_Y1_B] */
 {MT9D115_REG, 0x0990, 0x04AF},	/* MCU_DATA_0 */
 {MT9D115_REG, 0x098C, 0x222D},	/* MCU_ADDRESS [AE_R9_STEP] */
-{MT9D115_REG, 0x0990, 0x009A},	/* MCU_DATA_0 */
+{MT9D115_REG, 0x0990, 0x009B},	/* MCU_DATA_0 */
 {MT9D115_REG, 0x098C, 0xA408},	/* MCU_ADDRESS [FD_SEARCH_F1_50] */
 {MT9D115_REG, 0x0990, 0x0026},	/* MCU_DATA_0 */
 {MT9D115_REG, 0x098C, 0xA409},	/* MCU_ADDRESS [FD_SEARCH_F2_50] */
@@ -689,13 +692,13 @@ static struct mt9d115_reg mode_init[] = {
 {MT9D115_REG, 0x098C, 0xA40B},	/* MCU_ADDRESS [FD_SEARCH_F2_60] */
 {MT9D115_REG, 0x0990, 0x0031},	/* MCU_DATA_0 */
 {MT9D115_REG, 0x098C, 0x2411},	/* MCU_ADDRESS [FD_R9_STEP_F60_A] */
-{MT9D115_REG, 0x0990, 0x009A},	/* MCU_DATA_0 */
+{MT9D115_REG, 0x0990, 0x009B},	/* MCU_DATA_0 */
 {MT9D115_REG, 0x098C, 0x2413},	/* MCU_ADDRESS [FD_R9_STEP_F50_A] */
-{MT9D115_REG, 0x0990, 0x00B9},	/* MCU_DATA_0 */
+{MT9D115_REG, 0x0990, 0x00C0},	/* MCU_DATA_0 */
 {MT9D115_REG, 0x098C, 0x2415},	/* MCU_ADDRESS [FD_R9_STEP_F60_B] */
-{MT9D115_REG, 0x0990, 0x009A},	/* MCU_DATA_0 */
+{MT9D115_REG, 0x0990, 0x009B},	/* MCU_DATA_0 */
 {MT9D115_REG, 0x098C, 0x2417},	/* MCU_ADDRESS [FD_R9_STEP_F50_B] */
-{MT9D115_REG, 0x0990, 0x00B9},	/* MCU_DATA_0 */
+{MT9D115_REG, 0x0990, 0x00C0},	/* MCU_DATA_0 */
 {MT9D115_REG, 0x098C, 0xA404},	/* MCU_ADDRESS [FD_MODE] */
 {MT9D115_REG, 0x0990, 0x0010},	/* MCU_DATA_0 */
 {MT9D115_REG, 0x098C, 0xA40D},	/* MCU_ADDRESS [FD_STAT_MIN] */
@@ -1042,8 +1045,8 @@ static struct mt9d115_reg mode_init[] = {
 {MT9D115_REG, 0x3710, 0x14F9},	/* P_GB_P4Q2 */
 {MT9D115_REG, 0x3712, 0x7877},	/* P_GB_P4Q3 */
 {MT9D115_REG, 0x3714, 0x833B},	/* P_GB_P4Q4 */
-{MT9D115_REG, 0x3644, 0x0354},	/* POLY_ORIGIN_C */
 {MT9D115_REG, 0x3642, 0x0258},	/* POLY_ORIGIN_R */
+{MT9D115_REG, 0x3644, 0x0354},	/* POLY_ORIGIN_C */
 {MT9D115_REG, 0x3210, 0x01B8},	/*  COLOR_PIPELINE_CONTROL */
 /*  K25A_REV03_Patch03_CR32229_Color_Shift_between_Preview_and_Capture_REV1 */
 {MT9D115_REG, 0x098C, 0x0415},
@@ -1463,14 +1466,12 @@ static struct mt9d115_reg mode_init[] = {
 {MT9D115_WAIT_MS, 0, 10},
 {MT9D115_REG, 0x098C, 0xA103},	/* Refresh Mode */
 {MT9D115_REG, 0x0990, 0x0006},
-{MT9D115_WAIT_MS, 0, 500},
 {MT9D115_TABLE_END, 0, 0}
 };
 
 enum {
 	MT9D115_MODE_PREVIEW,
-	MT9D115_MODE_CAPTURE,
-	MT9D115_MODE_UNINITED
+	MT9D115_MODE_CAPTURE
 };
 
 static struct mt9d115_reg *mode_table[] = {
@@ -1480,10 +1481,10 @@ static struct mt9d115_reg *mode_table[] = {
 
 static struct mt9d115_iso iso_table[] = {
 	{0, 0},
-	{100, 0x18},
-	{200, 0x49},
-	{400, 0x79},
-	{800, 0xA9},
+	{100, 0x24},
+	{200, 0x48},
+	{400, 0x6C},
+	{800, 0x91},
 	{-1, -1}
 };
 

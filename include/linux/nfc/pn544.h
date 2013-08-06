@@ -16,6 +16,9 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#ifndef __PH544_H__
+#define __PH544_H__
+
 #define PN544_MAGIC	0xE9
 
 /*
@@ -31,3 +34,6 @@ struct pn544_i2c_platform_data {
 	unsigned int ven_gpio;
 	unsigned int firm_gpio;
 };
+
+#endif
+

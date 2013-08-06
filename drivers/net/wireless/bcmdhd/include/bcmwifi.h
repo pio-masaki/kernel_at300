@@ -3,31 +3,47 @@
  * This header file housing the define and function prototype use by
  * both the wl driver, tools & Apps.
  *
- * $Copyright Open Broadcom Corporation$
+ * Copyright (C) 1999-2011, Broadcom Corporation
+ * 
+ *         Unless you and Broadcom execute a separate written software license
+ * agreement governing use of this software, this software is licensed to you
+ * under the terms of the GNU General Public License version 2 (the "GPL"),
+ * available at http://www.broadcom.com/licenses/GPLv2.php, with the
+ * following added to such license:
+ * 
+ *      As a special exception, the copyright holders of this software give you
+ * permission to link this software with independent modules, and to copy and
+ * distribute the resulting executable under terms of your choice, provided that
+ * you also meet, for each linked independent module, the terms and conditions of
+ * the license of that module.  An independent module is a module which is not
+ * derived from this software.  The special exception does not apply to any
+ * modifications of the software.
+ * 
+ *      Notwithstanding the above, under no circumstances may you combine this
+ * software in any way with any other Broadcom software provided under a license
+ * other than the GPL, without Broadcom's express prior written consent.
  *
  * $Id: bcmwifi.h 277737 2011-08-16 17:54:59Z $
  */
+
 
 #ifndef	_bcmwifi_h_
 #define	_bcmwifi_h_
 
 
-/* A chanspec holds the channel number, band, bandwidth and control sideband */
+
 typedef uint16 chanspec_t;
 
-/* channel defines */
+
 #define CH_UPPER_SB			0x01
 #define CH_LOWER_SB			0x02
 #define CH_EWA_VALID			0x04
 #define CH_20MHZ_APART			4
 #define CH_10MHZ_APART			2
-#define CH_5MHZ_APART			1	/* 2G band channels are 5 Mhz apart */
-#define CH_MAX_2G_CHANNEL		14	/* Max channel in 2G band */
-#define WLC_MAX_2G_CHANNEL		CH_MAX_2G_CHANNEL /* legacy define */
-#define	MAXCHANNEL		224	/* max # supported channels. The max channel no is 216,
-					 * this is that + 1 rounded up to a multiple of NBBY (8).
-					 * DO NOT MAKE it > 255: channels are uint8's all over
-					 */
+#define CH_5MHZ_APART			1	
+#define CH_MAX_2G_CHANNEL		14	
+#define WLC_MAX_2G_CHANNEL		CH_MAX_2G_CHANNEL 
+#define	MAXCHANNEL		224	
 
 #define WL_CHANSPEC_CHAN_MASK		0x00ff
 #define WL_CHANSPEC_CHAN_SHIFT		0
@@ -50,12 +66,12 @@ typedef uint16 chanspec_t;
 #define WL_CHANSPEC_BAND_2G		0x2000
 #define INVCHANSPEC			255
 
-/* used to calculate the chan_freq = chan_factor * 500Mhz + 5 * chan_number */
-#define WF_CHAN_FACTOR_2_4_G		4814	/* 2.4 GHz band, 2407 MHz */
-#define WF_CHAN_FACTOR_5_G		10000	/* 5   GHz band, 5000 MHz */
-#define WF_CHAN_FACTOR_4_G		8000	/* 4.9 GHz band for Japan */
 
-/* channel defines */
+#define WF_CHAN_FACTOR_2_4_G		4814	
+#define WF_CHAN_FACTOR_5_G		10000	
+#define WF_CHAN_FACTOR_4_G		8000	
+
+
 #define LOWER_20_SB(channel)	(((channel) > CH_10MHZ_APART) ? ((channel) - CH_10MHZ_APART) : 0)
 #define UPPER_20_SB(channel)	(((channel) < (MAXCHANNEL - CH_10MHZ_APART)) ? \
 				((channel) + CH_10MHZ_APART) : 0)
@@ -72,7 +88,7 @@ typedef uint16 chanspec_t;
 #define CHSPEC_CHANNEL(chspec)	((uint8)((chspec) & WL_CHANSPEC_CHAN_MASK))
 #define CHSPEC_BAND(chspec)	((chspec) & WL_CHANSPEC_BAND_MASK)
 
-/* chanspec stores radio channel & flags to indicate control channel location, i.e. upper/lower */
+
 #define CHSPEC_CTL_SB(chspec)  (chspec & WL_CHANSPEC_CTL_SB_MASK)
 #define CHSPEC_BW(chspec)      (chspec & WL_CHANSPEC_BW_MASK)
 
@@ -84,7 +100,7 @@ typedef uint16 chanspec_t;
 #define CHSPEC_IS40(chspec)	0
 #endif
 
-#else /* !WL11N_20MHZONLY */
+#else 
 
 #define CHSPEC_IS10(chspec)	(((chspec) & WL_CHANSPEC_BW_MASK) == WL_CHANSPEC_BW_10)
 #define CHSPEC_IS20(chspec)	(((chspec) & WL_CHANSPEC_BW_MASK) == WL_CHANSPEC_BW_20)
@@ -92,7 +108,7 @@ typedef uint16 chanspec_t;
 #define CHSPEC_IS40(chspec)	(((chspec) & WL_CHANSPEC_BW_MASK) == WL_CHANSPEC_BW_40)
 #endif
 
-#endif /* !WL11N_20MHZONLY */
+#endif 
 
 #define CHSPEC_IS20_UNCOND(chspec)	(((chspec) & WL_CHANSPEC_BW_MASK) == WL_CHANSPEC_BW_20)
 
@@ -108,97 +124,42 @@ typedef uint16 chanspec_t;
 
 #define CHANSPEC_STR_LEN    8
 
-/* defined rate in 500kbps */
-#define WLC_MAXRATE	108	/* in 500kbps units */
-#define WLC_RATE_1M	2	/* in 500kbps units */
-#define WLC_RATE_2M	4	/* in 500kbps units */
-#define WLC_RATE_5M5	11	/* in 500kbps units */
-#define WLC_RATE_11M	22	/* in 500kbps units */
-#define WLC_RATE_6M	12	/* in 500kbps units */
-#define WLC_RATE_9M	18	/* in 500kbps units */
-#define WLC_RATE_12M	24	/* in 500kbps units */
-#define WLC_RATE_18M	36	/* in 500kbps units */
-#define WLC_RATE_24M	48	/* in 500kbps units */
-#define WLC_RATE_36M	72	/* in 500kbps units */
-#define WLC_RATE_48M	96	/* in 500kbps units */
-#define WLC_RATE_54M	108	/* in 500kbps units */
 
-#define WLC_2G_25MHZ_OFFSET		5	/* 2.4GHz band channel offset */
+#define WLC_MAXRATE	108	
+#define WLC_RATE_1M	2	
+#define WLC_RATE_2M	4	
+#define WLC_RATE_5M5	11	
+#define WLC_RATE_11M	22	
+#define WLC_RATE_6M	12	
+#define WLC_RATE_9M	18	
+#define WLC_RATE_12M	24	
+#define WLC_RATE_18M	36	
+#define WLC_RATE_24M	48	
+#define WLC_RATE_36M	72	
+#define WLC_RATE_48M	96	
+#define WLC_RATE_54M	108	
 
-/*
- * Convert chanspec to ascii string
- * @param	chspec		chanspec format
- * @param	buf		ascii string of chanspec
- * @return	pointer to buf with room for at least CHANSPEC_STR_LEN bytes
- */
+#define WLC_2G_25MHZ_OFFSET		5	
+
+
 extern char * wf_chspec_ntoa(chanspec_t chspec, char *buf);
 
-/*
- * Convert ascii string to chanspec
- * @param	a		pointer to input string
- * @return	>= 0 if successful or 0 otherwise
- */
+
 extern chanspec_t wf_chspec_aton(char *a);
 
-/*
- * Verify the chanspec is using a legal set of parameters, i.e. that the
- * chanspec specified a band, bw, ctl_sb and channel and that the
- * combination could be legal given any set of circumstances.
- * RETURNS: TRUE is the chanspec is malformed, false if it looks good.
- */
+
 extern bool wf_chspec_malformed(chanspec_t chanspec);
 
-/*
- * This function returns the channel number that control traffic is being sent on, for legacy
- * channels this is just the channel number, for 40MHZ channels it is the upper or lower 20MHZ
- * sideband depending on the chanspec selected
- */
+
 extern uint8 wf_chspec_ctlchan(chanspec_t chspec);
 
-/*
- * This function returns the chanspec that control traffic is being sent on, for legacy
- * channels this is just the chanspec, for 40MHZ channels it is the upper or lower 20MHZ
- * sideband depending on the chanspec selected
- */
+
 extern chanspec_t wf_chspec_ctlchspec(chanspec_t chspec);
 
-/*
- * Return the channel number for a given frequency and base frequency.
- * The returned channel number is relative to the given base frequency.
- * If the given base frequency is zero, a base frequency of 5 GHz is assumed for
- * frequencies from 5 - 6 GHz, and 2.407 GHz is assumed for 2.4 - 2.5 GHz.
- *
- * Frequency is specified in MHz.
- * The base frequency is specified as (start_factor * 500 kHz).
- * Constants WF_CHAN_FACTOR_2_4_G, WF_CHAN_FACTOR_5_G are defined for
- * 2.4 GHz and 5 GHz bands.
- *
- * The returned channel will be in the range [1, 14] in the 2.4 GHz band
- * and [0, 200] otherwise.
- * -1 is returned if the start_factor is WF_CHAN_FACTOR_2_4_G and the
- * frequency is not a 2.4 GHz channel, or if the frequency is not and even
- * multiple of 5 MHz from the base frequency to the base plus 1 GHz.
- *
- * Reference 802.11 REVma, section 17.3.8.3, and 802.11B section 18.4.6.2
- */
+
 extern int wf_mhz2channel(uint freq, uint start_factor);
 
-/*
- * Return the center frequency in MHz of the given channel and base frequency.
- * The channel number is interpreted relative to the given base frequency.
- *
- * The valid channel range is [1, 14] in the 2.4 GHz band and [0, 200] otherwise.
- * The base frequency is specified as (start_factor * 500 kHz).
- * Constants WF_CHAN_FACTOR_2_4_G, WF_CHAN_FACTOR_5_G are defined for
- * 2.4 GHz and 5 GHz bands.
- * The channel range of [1, 14] is only checked for a start_factor of
- * WF_CHAN_FACTOR_2_4_G (4814).
- * Odd start_factors produce channels on .5 MHz boundaries, in which case
- * the answer is rounded down to an integral MHz.
- * -1 is returned for an out of range channel.
- *
- * Reference 802.11 REVma, section 17.3.8.3, and 802.11B section 18.4.6.2
- */
+
 extern int wf_channel2mhz(uint channel, uint start_factor);
 
-#endif	/* _bcmwifi_h_ */
+#endif	

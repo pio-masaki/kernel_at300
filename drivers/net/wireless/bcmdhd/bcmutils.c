@@ -1,7 +1,25 @@
 /*
  * Driver O/S-independent utility routines
  *
- * $Copyright Open Broadcom Corporation$
+ * Copyright (C) 1999-2011, Broadcom Corporation
+ * 
+ *         Unless you and Broadcom execute a separate written software license
+ * agreement governing use of this software, this software is licensed to you
+ * under the terms of the GNU General Public License version 2 (the "GPL"),
+ * available at http://www.broadcom.com/licenses/GPLv2.php, with the
+ * following added to such license:
+ * 
+ *      As a special exception, the copyright holders of this software give you
+ * permission to link this software with independent modules, and to copy and
+ * distribute the resulting executable under terms of your choice, provided that
+ * you also meet, for each linked independent module, the terms and conditions of
+ * the license of that module.  An independent module is a module which is not
+ * derived from this software.  The special exception does not apply to any
+ * modifications of the software.
+ * 
+ *      Notwithstanding the above, under no circumstances may you combine this
+ * software in any way with any other Broadcom software provided under a license
+ * other than the GPL, without Broadcom's express prior written consent.
  * $Id: bcmutils.c,v 1.277.2.18 2011-01-26 02:32:08 $
  */
 
@@ -14,9 +32,6 @@
 #include <osl.h>
 #include <bcmutils.h>
 #include <siutils.h>
-#if defined(BCMNVRAM)
-#include <bcmnvram.h>
-#endif
 
 #else /* !BCMDRIVER */
 
@@ -552,7 +567,7 @@ const unsigned char bcm_ctype[] = {
 };
 
 ulong
-BCMROMFN(bcm_strtoul)(char *cp, char **endp, uint base)
+bcm_strtoul(char *cp, char **endp, uint base)
 {
 	ulong result, last_result = 0, value;
 	bool minus;
@@ -607,14 +622,14 @@ BCMROMFN(bcm_strtoul)(char *cp, char **endp, uint base)
 }
 
 int
-BCMROMFN(bcm_atoi)(char *s)
+bcm_atoi(char *s)
 {
 	return (int)bcm_strtoul(s, NULL, 10);
 }
 
 /* return pointer to location of substring 'needle' in 'haystack' */
 char*
-BCMROMFN(bcmstrstr)(char *haystack, char *needle)
+bcmstrstr(char *haystack, char *needle)
 {
 	int len, nlen;
 	int i;
@@ -632,7 +647,7 @@ BCMROMFN(bcmstrstr)(char *haystack, char *needle)
 }
 
 char*
-BCMROMFN(bcmstrcat)(char *dest, const char *src)
+bcmstrcat(char *dest, const char *src)
 {
 	char *p;
 
@@ -645,7 +660,7 @@ BCMROMFN(bcmstrcat)(char *dest, const char *src)
 }
 
 char*
-BCMROMFN(bcmstrncat)(char *dest, const char *src, uint size)
+bcmstrncat(char *dest, const char *src, uint size)
 {
 	char *endp;
 	char *p;
@@ -814,7 +829,7 @@ bcmstrnicmp(const char* s1, const char* s2, int cnt)
 
 /* parse a xx:xx:xx:xx:xx:xx format ethernet address */
 int
-BCMROMFN(bcm_ether_atoe)(char *p, struct ether_addr *ea)
+bcm_ether_atoe(char *p, struct ether_addr *ea)
 {
 	int i = 0;
 
@@ -1131,7 +1146,7 @@ static const uint8 crc8_table[256] = {
 	(c) = ((c) >> 8) ^ crc##n##_table[((c) ^ (x)) & 0xff]
 
 uint8
-BCMROMFN(hndcrc8)(
+hndcrc8(
 	uint8 *pdata,   /* pointer to array of data to process */
 	uint  nbytes,   /* number of input data bytes to process */
 	uint8 crc   /* either CRC8_INIT_VALUE or previous return value */
@@ -1204,7 +1219,7 @@ static const uint16 crc16_table[256] = {
 };
 
 uint16
-BCMROMFN(hndcrc16)(
+hndcrc16(
 	uint8 *pdata,  /* pointer to array of data to process */
 	uint nbytes, /* number of input data bytes to process */
 	uint16 crc     /* either CRC16_INIT_VALUE or previous return value */
@@ -1287,7 +1302,7 @@ static const uint32 crc32_table[256] = {
  * accumulating over multiple pieces.
  */
 uint32
-BCMROMFN(hndcrc32)(uint8 *pdata, uint nbytes, uint32 crc)
+hndcrc32(uint8 *pdata, uint nbytes, uint32 crc)
 {
 	uint8 *pend;
 #ifdef __mips__
@@ -1369,7 +1384,7 @@ testcrc32(void)
  * by the TLV parameter's length if it is valid.
  */
 bcm_tlv_t *
-BCMROMFN(bcm_next_tlv)(bcm_tlv_t *elt, int *buflen)
+bcm_next_tlv(bcm_tlv_t *elt, int *buflen)
 {
 	int len;
 
@@ -1395,7 +1410,7 @@ BCMROMFN(bcm_next_tlv)(bcm_tlv_t *elt, int *buflen)
  * matches tag
  */
 bcm_tlv_t *
-BCMROMFN(bcm_parse_tlvs)(void *buf, int buflen, uint key)
+bcm_parse_tlvs(void *buf, int buflen, uint key)
 {
 	bcm_tlv_t *elt;
 	int totlen;
@@ -1425,7 +1440,7 @@ BCMROMFN(bcm_parse_tlvs)(void *buf, int buflen, uint key)
  * than the target key.
  */
 bcm_tlv_t *
-BCMROMFN(bcm_parse_ordered_tlvs)(void *buf, int buflen, uint key)
+bcm_parse_ordered_tlvs(void *buf, int buflen, uint key)
 {
 	bcm_tlv_t *elt;
 	int totlen;
@@ -1575,6 +1590,9 @@ static const char *crypto_algo_names[] = {
 	"UNDEF",
 	"UNDEF",
 	"UNDEF",
+#ifdef BCMWAPI_WPI
+	"WAPI",
+#endif /* BCMWAPI_WPI */
 	"UNDEF"
 };
 
@@ -1711,7 +1729,7 @@ static const uint16 nqdBm_to_mW_map[QDBM_TABLE_LEN] = {
 };
 
 uint16
-BCMROMFN(bcm_qdbm_to_mw)(uint8 qdbm)
+bcm_qdbm_to_mw(uint8 qdbm)
 {
 	uint factor = 1;
 	int idx = qdbm - QDBM_OFFSET;
@@ -1736,7 +1754,7 @@ BCMROMFN(bcm_qdbm_to_mw)(uint8 qdbm)
 }
 
 uint8
-BCMROMFN(bcm_mw_to_qdbm)(uint16 mw)
+bcm_mw_to_qdbm(uint16 mw)
 {
 	uint8 qdbm;
 	int offset;
@@ -1769,7 +1787,7 @@ BCMROMFN(bcm_mw_to_qdbm)(uint16 mw)
 
 
 uint
-BCMROMFN(bcm_bitcount)(uint8 *bitmap, uint length)
+bcm_bitcount(uint8 *bitmap, uint length)
 {
 	uint bitcount = 0, i;
 	uint8 tmp;

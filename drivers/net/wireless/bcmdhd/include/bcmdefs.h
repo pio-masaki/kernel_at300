@@ -1,39 +1,48 @@
 /*
  * Misc system wide definitions
  *
- * $Copyright Open Broadcom Corporation$
+ * Copyright (C) 1999-2011, Broadcom Corporation
+ * 
+ *         Unless you and Broadcom execute a separate written software license
+ * agreement governing use of this software, this software is licensed to you
+ * under the terms of the GNU General Public License version 2 (the "GPL"),
+ * available at http://www.broadcom.com/licenses/GPLv2.php, with the
+ * following added to such license:
+ * 
+ *      As a special exception, the copyright holders of this software give you
+ * permission to link this software with independent modules, and to copy and
+ * distribute the resulting executable under terms of your choice, provided that
+ * you also meet, for each linked independent module, the terms and conditions of
+ * the license of that module.  An independent module is a module which is not
+ * derived from this software.  The special exception does not apply to any
+ * modifications of the software.
+ * 
+ *      Notwithstanding the above, under no circumstances may you combine this
+ * software in any way with any other Broadcom software provided under a license
+ * other than the GPL, without Broadcom's express prior written consent.
  *
  * $Id: bcmdefs.h 279282 2011-08-23 22:44:02Z $
  */
 
+
 #ifndef	_bcmdefs_h_
 #define	_bcmdefs_h_
 
-/*
- * One doesn't need to include this file explicitly, gets included automatically if
- * typedefs.h is included.
- */
 
-/* Use BCM_REFERENCE to suppress warnings about intentionally-unused function
- * arguments or local variables.
- */
+
+
 #define BCM_REFERENCE(data)	((void)(data))
 
-/* Reclaiming text and data :
- * The following macros specify special linker sections that can be reclaimed
- * after a system is considered 'up'.
- * BCMATTACHFN is also used for detach functions (it's not worth having a BCMDETACHFN,
- * as in most cases, the attach function calls the detach function to clean up on error).
- */
+
 
 #define bcmreclaimed 		0
-#define BCMATTACHDATA(_data)	_data
-#define BCMATTACHFN(_fn)	_fn
+#define _data	_data
+#define _fn	_fn
 #define BCMPREATTACHDATA(_data)	_data
 #define BCMPREATTACHFN(_fn)	_fn
-#define BCMINITDATA(_data)	_data
-#define BCMINITFN(_fn)		_fn
-#define BCMUNINITFN(_fn)	_fn
+#define _data	_data
+#define _fn		_fn
+#define _fn	_fn
 #define	BCMNMIATTACHFN(_fn)	_fn
 #define	BCMNMIATTACHDATA(_data)	_data
 #define BCMOVERLAY0DATA(_sym)	_sym
@@ -46,51 +55,51 @@
 
 
 
-/* Put some library data/code into ROM to reduce RAM requirements */
-#define BCMROMDATA(_data)	_data
+
+#define _data	_data
 #define BCMROMDAT_NAME(_data)	_data
-#define BCMROMFN(_fn)		_fn
-#define BCMROMFN_NAME(_fn)	_fn
+#define _fn		_fn
+#define _fn	_fn
 #define STATIC	static
 #define BCMROMDAT_ARYSIZ(data)	ARRAYSIZE(data)
 #define BCMROMDAT_SIZEOF(data)	sizeof(data)
 #define BCMROMDAT_APATCH(data)
 #define BCMROMDAT_SPATCH(data)
 
-/* overlay function tagging */
+
 
 #define OVERLAY_INLINE
 #define OSTATIC			static
 #define BCMOVERLAYDATA(_ovly, _sym)	_sym
 #define BCMOVERLAYFN(_ovly, _fn)	_fn
 #define BCMOVERLAYERRFN(_fn)	_fn
-#define BCMROMOVERLAYDATA(_ovly, _data)	BCMROMDATA(_data)
-#define BCMROMOVERLAYFN(_ovly, _fn)		BCMROMFN(_fn)
-#define BCMATTACHOVERLAYDATA(_ovly, _sym)	BCMATTACHDATA(_sym)
-#define BCMATTACHOVERLAYFN(_ovly, _fn)		BCMATTACHFN(_fn)
-#define BCMINITOVERLAYDATA(_ovly, _sym)		BCMINITDATA(_sym)
-#define BCMINITOVERLAYFN(_ovly, _fn)		BCMINITFN(_fn)
-#define BCMUNINITOVERLAYFN(_ovly, _fn)		BCMUNINITFN(_fn)
+#define BCMROMOVERLAYDATA(_ovly, _data)	_data
+#define BCMROMOVERLAYFN(_ovly, _fn)		_fn
+#define BCMATTACHOVERLAYDATA(_ovly, _sym)	_sym
+#define BCMATTACHOVERLAYFN(_ovly, _fn)		_fn
+#define BCMINITOVERLAYDATA(_ovly, _sym)		_sym
+#define BCMINITOVERLAYFN(_ovly, _fn)		_fn
+#define BCMUNINITOVERLAYFN(_ovly, _fn)		_fn
 
 
-/* Bus types */
-#define	SI_BUS			0	/* SOC Interconnect */
-#define	PCI_BUS			1	/* PCI target */
-#define	PCMCIA_BUS		2	/* PCMCIA target */
-#define SDIO_BUS		3	/* SDIO target */
-#define JTAG_BUS		4	/* JTAG */
-#define USB_BUS			5	/* USB (does not support R/W REG) */
-#define SPI_BUS			6	/* gSPI target */
-#define RPC_BUS			7	/* RPC target */
 
-/* Allows size optimization for single-bus image */
+#define	SI_BUS			0	
+#define	PCI_BUS			1	
+#define	PCMCIA_BUS		2	
+#define SDIO_BUS		3	
+#define JTAG_BUS		4	
+#define USB_BUS			5	
+#define SPI_BUS			6	
+#define RPC_BUS			7	
+
+
 #ifdef BCMBUSTYPE
 #define BUSTYPE(bus) 	(BCMBUSTYPE)
 #else
 #define BUSTYPE(bus) 	(bus)
 #endif
 
-/* Allows size optimization for single-backplane image */
+
 #ifdef BCMCHIPTYPE
 #define CHIPTYPE(bus) 	(BCMCHIPTYPE)
 #else
@@ -98,7 +107,7 @@
 #endif
 
 
-/* Allows size optimization for SPROM support */
+
 #if defined(BCMSPROMBUS)
 #define SPROMBUS	(BCMSPROMBUS)
 #elif defined(SI_PCMCIA_SROM)
@@ -107,7 +116,7 @@
 #define SPROMBUS	(PCI_BUS)
 #endif
 
-/* Allows size optimization for single-chip image */
+
 #ifdef BCMCHIPID
 #define CHIPID(chip)	(BCMCHIPID)
 #else
@@ -120,15 +129,15 @@
 #define CHIPREV(rev)	(rev)
 #endif
 
-/* Defines for DMA Address Width - Shared between OSL and HNDDMA */
-#define DMADDR_MASK_32 0x0		/* Address mask for 32-bits */
-#define DMADDR_MASK_30 0xc0000000	/* Address mask for 30-bits */
-#define DMADDR_MASK_0  0xffffffff	/* Address mask for 0-bits (hi-part) */
 
-#define	DMADDRWIDTH_30  30 /* 30-bit addressing capability */
-#define	DMADDRWIDTH_32  32 /* 32-bit addressing capability */
-#define	DMADDRWIDTH_63  63 /* 64-bit addressing capability */
-#define	DMADDRWIDTH_64  64 /* 64-bit addressing capability */
+#define DMADDR_MASK_32 0x0		
+#define DMADDR_MASK_30 0xc0000000	
+#define DMADDR_MASK_0  0xffffffff	
+
+#define	DMADDRWIDTH_30  30 
+#define	DMADDRWIDTH_32  32 
+#define	DMADDRWIDTH_63  63 
+#define	DMADDRWIDTH_64  64 
 
 #ifdef BCMDMA64OSL
 typedef struct {
@@ -157,9 +166,9 @@ typedef unsigned long dmaaddr_t;
 	do { \
 		(_pa) = (_val);			\
 	} while (0)
-#endif /* BCMDMA64OSL */
+#endif 
 
-/* One physical DMA segment */
+
 typedef struct  {
 	dmaaddr_t addr;
 	uint32	  length;
@@ -169,33 +178,23 @@ typedef struct  {
 
 
 typedef struct {
-	void *oshdmah; /* Opaque handle for OSL to store its information */
-	uint origsize; /* Size of the virtual packet */
+	void *oshdmah; 
+	uint origsize; 
 	uint nsegs;
 	hnddma_seg_t segs[MAX_DMA_SEGS];
 } hnddma_seg_map_t;
 
 
-/* packet headroom necessary to accommodate the largest header in the system, (i.e TXOFF).
- * By doing, we avoid the need  to allocate an extra buffer for the header when bridging to WL.
- * There is a compile time check in wlc.c which ensure that this value is at least as big
- * as TXOFF. This value is used in dma_rxfill (hnddma.c).
- */
+
 
 #if defined(BCM_RPC_NOCOPY) || defined(BCM_RCP_TXNOCOPY)
-/* add 40 bytes to allow for extra RPC header and info  */
+
 #define BCMEXTRAHDROOM 220
 #else
 #define BCMEXTRAHDROOM 172
 #endif
 
-/* Headroom required for dongle-to-host communication.  Packets allocated
- * locally in the dongle (e.g. for CDC ioctls or RNDIS messages) should
- * leave this much room in front for low-level message headers which may
- * be needed to get across the dongle bus to the host.  (These messages
- * don't go over the network, so room for the full WL header above would
- * be a waste.).
-*/
+
 #define BCMDONGLEHDRSZ 12
 #define BCMDONGLEPADSZ 16
 
@@ -206,16 +205,7 @@ typedef struct {
 #define BCMASSERT_SUPPORT
 #endif 
 
-/* Macros for doing definition and get/set of bitfields
- * Usage example, e.g. a three-bit field (bits 4-6):
- *    #define <NAME>_M	BITFIELD_MASK(3)
- *    #define <NAME>_S	4
- * ...
- *    regval = R_REG(osh, &regs->regfoo);
- *    field = GFIELD(regval, <NAME>);
- *    regval = SFIELD(regval, <NAME>, 1);
- *    W_REG(osh, &regs->regfoo, regval);
- */
+
 #define BITFIELD_MASK(width) \
 		(((unsigned)1 << (width)) - 1)
 #define GFIELD(val, field) \
@@ -224,18 +214,18 @@ typedef struct {
 		(((val) & (~(field ## _M << field ## _S))) | \
 		 ((unsigned)(bits) << field ## _S))
 
-/* define BCMSMALL to remove misc features for memory-constrained environments */
+
 #ifdef BCMSMALL
 #undef	BCMSPACE
-#define bcmspace	FALSE	/* if (bcmspace) code is discarded */
+#define bcmspace	FALSE	
 #else
 #define	BCMSPACE
-#define bcmspace	TRUE	/* if (bcmspace) code is retained */
+#define bcmspace	TRUE	
 #endif
 
-/* Max. nvram variable table size */
+
 #define	MAXSZ_NVRAM_VARS	4096
 
 #define LOCATOR_EXTERN static
 
-#endif /* _bcmdefs_h_ */
+#endif 

@@ -6,7 +6,7 @@
  * Copyright (C) 2010 Google, Inc.
  * Author: Erik Gilling <konkers@android.com>
  *
- * Copyright (C) 2010-2011 NVIDIA Corporation
+ * Copyright (c) 2010-2012, NVIDIA CORPORATION, All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -218,5 +218,9 @@ unsigned long tegra_hdmi_readl(struct tegra_dc_hdmi_data *hdmi,
 				unsigned long reg);
 void tegra_hdmi_writel(struct tegra_dc_hdmi_data *hdmi,
 				unsigned long val, unsigned long reg);
+
+/* added by Levi for DVI */
+char *tegra_dc_get_model_name(struct tegra_dc *dc);
+bool tegra_dc_get_dvi(struct tegra_dc *dc);
 
 #endif

@@ -19,7 +19,6 @@
 #include <linux/mfd/nvtec.h>
 #include <linux/nvcommon.h>
 
-/* Daniel Wang */
 #include <linux/wakelock.h>
 #include <asm/mach-types.h>
 #include <linux/switch_gpio.h>
@@ -30,14 +29,13 @@
 
 #define NVTEC_MAX_FW_SIZE               65536 /* 64K */
 #define NVTEC_MAX_DATAFLASH_SIZE	21	/* 21 Bytes */	
-//#define NVTEC_I2C_MAX_PACKET_SIZE       34
-
-#define MAXLEN	32
+#define NVTEC_I2C_MAXLEN	32
 
 struct nvtec {
     struct mutex    lock;
     struct device   *dev;
     struct i2c_client *client;
+    struct miscdevice miscdev;
 
     int request_pin;
     int pwr_state_pin;
@@ -47,16 +45,16 @@ struct nvtec {
     int flash_mode;
     int data_flash_mode;
     int state;
-    int lock_state; /* 0=lock, 1=unlock */
+    bool switch_lock_enabled;
 
     struct blocking_notifier_head undock_notifier;
     struct blocking_notifier_head system_notifier;
     struct blocking_notifier_head battery_notifier;
-    struct blocking_notifier_head cir_notifier;
 
     struct notifier_block switch_gpio_notifier;
 
     wait_queue_head_t wq_ack;
+    struct wake_lock upgrade_lock;
 };
 
 enum nvtec_state {
@@ -91,37 +89,10 @@ enum nvtec_hdmi_switch_mode {
     NVTEC_HDMI_SW_MAX,
 };
 
-/* Daniel Wang */
-struct mcu_led_info{
-    uint16_t raw;
-    char *name;
-};
+static unsigned int percentage = 0;
+static int cmd_ack = 0;
+static struct nvtec *g_nvtec = NULL;
 
-struct mcu_led_info led_mode[5] = {
-    {0x0,"mcu"},
-    {0x150,"on"},
-    {0x154,"off"},
-    {0x155,"blink_1"},
-    {0x156,"blink_2"}
-};
-
-struct mcu_lock_key_info{
-    uint8_t raw;
-    char *mode;
-};
-
-struct mcu_lock_key_info lock_mode[2] = {
-    {0x1,"lock"},
-    {0x0,"unlock"}
-};
-
-unsigned int percentage = 0;
-unsigned short data_flash_return = 0xF;
-static struct wake_lock upgrade_lock;
-static NvBool upgrade_lock_flag = NV_FALSE;
-static NvBool default_mcu_mode = NV_TRUE;
-
-static struct nvtec *nvtec = NULL;
 static int nvtec_set_state(struct i2c_client *client, uint16_t state);
 static int nvtec_read_event(struct i2c_client *client, uint16_t *event);
 
@@ -147,6 +118,18 @@ static int __nvtec_read_byte(struct i2c_client *client, int reg, uint8_t *val)
     return (ret < 0) ? ret : 0;
 }
 
+static int nvtec_read_byte_lock(struct i2c_client *client, int reg, uint8_t *val)
+{
+    struct nvtec *ec = i2c_get_clientdata(client);
+    int ret;
+
+    mutex_lock(&ec->lock);
+    ret = __nvtec_read_byte(client, reg, val);
+    mutex_unlock(&ec->lock);
+
+    return ret;
+}
+
 static int __nvtec_read_word(struct i2c_client *client, int reg, uint16_t *val)
 {
     int ret = 0;
@@ -169,6 +152,18 @@ static int __nvtec_read_word(struct i2c_client *client, int reg, uint16_t *val)
     return (ret < 0) ? ret : 0;
 }
 
+static int nvtec_read_word_lock(struct i2c_client *client, int reg, uint16_t *val)
+{
+    struct nvtec *ec = i2c_get_clientdata(client);
+    int ret;
+
+    mutex_lock(&ec->lock);
+    ret = __nvtec_read_word(client, reg, val);
+    mutex_unlock(&ec->lock);
+
+    return ret;
+}
+
 static int __nvtec_read_block(struct i2c_client *client, int reg, 
                                      int len, uint8_t *val)
 {
@@ -187,6 +182,19 @@ static int __nvtec_read_block(struct i2c_client *client, int reg,
     }
 
     return (ret < 0) ? ret : 0;
+}
+
+static int nvtec_read_block_lock(struct i2c_client *client, int reg,
+                                 int len, uint8_t *val)
+{
+    struct nvtec *ec = i2c_get_clientdata(client);
+    int ret;
+
+    mutex_lock(&ec->lock);
+    ret = __nvtec_read_block(client, reg, len, val);
+    mutex_unlock(&ec->lock);
+
+    return ret;
 }
 
 static int __nvtec_write_byte(struct i2c_client *client, int reg, uint8_t val)
@@ -209,6 +217,18 @@ static int __nvtec_write_byte(struct i2c_client *client, int reg, uint8_t val)
     return (ret < 0) ? ret : 0;
 }
 
+static int nvtec_write_byte_lock(struct i2c_client *client, int reg, uint8_t val)
+{
+    struct nvtec *ec = i2c_get_clientdata(client);
+    int ret;
+
+    mutex_lock(&ec->lock);
+    ret = __nvtec_write_byte(client, reg, val);
+    mutex_unlock(&ec->lock);
+
+    return ret;
+}
+
 static int __nvtec_write_word(struct i2c_client *client, int reg, uint16_t val)
 {
     int ret = 0;
@@ -227,6 +247,18 @@ static int __nvtec_write_word(struct i2c_client *client, int reg, uint16_t val)
     }
 
     return (ret < 0) ? ret : 0;
+}
+
+static int nvtec_write_word_lock(struct i2c_client *client, int reg, uint16_t val)
+{
+    struct nvtec *ec = i2c_get_clientdata(client);
+    int ret;
+
+    mutex_lock(&ec->lock);
+    ret = __nvtec_write_word(client, reg, val);
+    mutex_unlock(&ec->lock);
+
+    return ret;
 }
 
 static int __nvtec_write_block(struct i2c_client *client, int reg,
@@ -249,126 +281,114 @@ static int __nvtec_write_block(struct i2c_client *client, int reg,
     return (ret < 0) ? ret : 0;
 }
 
-int nvtec_read_byte(struct device *dev, int reg, uint8_t *val)
+static int nvtec_write_block_lock(struct i2c_client *client, int reg,
+                                  int len, uint8_t *val)
 {
+    struct nvtec *ec = i2c_get_clientdata(client);
     int ret;
 
-    if (nvtec->state != NVTEC_STATE_S0 ||
-        nvtec->flash_mode == 1)
-        return -EINVAL;
-
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_byte(to_i2c_client(dev), reg, val);
-    mutex_unlock(&nvtec->lock);
+    mutex_lock(&ec->lock);
+    ret = __nvtec_write_block(client, reg, len, val);
+    mutex_unlock(&ec->lock);
 
     return ret;
+}
+
+int nvtec_read_byte(struct device *dev, int reg, uint8_t *val)
+{
+    struct i2c_client *client = to_i2c_client(dev);
+    struct nvtec *ec = i2c_get_clientdata(client);
+
+    if (ec->state != NVTEC_STATE_S0 ||
+        ec->flash_mode == 1)
+        return -EINVAL;
+
+    return nvtec_read_byte_lock(client, reg, val);
 }
 EXPORT_SYMBOL_GPL(nvtec_read_byte);
 
 int nvtec_read_word(struct device *dev, int reg, uint16_t *val)
 {
-    int ret;
+    struct i2c_client *client = to_i2c_client(dev);
+    struct nvtec *ec = i2c_get_clientdata(client);
 
-    if (nvtec->state != NVTEC_STATE_S0 ||
-        nvtec->flash_mode == 1)
+    if (ec->state != NVTEC_STATE_S0 ||
+        ec->flash_mode == 1)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_word(to_i2c_client(dev), reg, val);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
+    return nvtec_read_word_lock(client, reg, val);
 }
 EXPORT_SYMBOL_GPL(nvtec_read_word);
 
 int nvtec_read_block(struct device *dev, int reg, int len, uint8_t *val)
 {
-    int ret;
+    struct i2c_client *client = to_i2c_client(dev);
+    struct nvtec *ec = i2c_get_clientdata(client);
 
-    if (nvtec->state != NVTEC_STATE_S0 ||
-        nvtec->flash_mode == 1)
+    if (ec->state != NVTEC_STATE_S0 ||
+        ec->flash_mode == 1)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_block(to_i2c_client(dev), reg, len, val);
-    mutex_unlock(&nvtec->lock);
-    
-    return ret;
+    return nvtec_read_block_lock(client, reg, len, val);
 }
 EXPORT_SYMBOL_GPL(nvtec_read_block);
 
 int nvtec_write_byte(struct device *dev, int reg, uint8_t val)
 {
-    int ret;
+    struct i2c_client *client = to_i2c_client(dev);
+    struct nvtec *ec = i2c_get_clientdata(client);
 
-    if (nvtec->state != NVTEC_STATE_S0 ||
-        nvtec->flash_mode == 1)
+    if (ec->state != NVTEC_STATE_S0 ||
+        ec->flash_mode == 1)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_write_byte(to_i2c_client(dev), reg, val);
-    mutex_unlock(&nvtec->lock);
-    
-    return ret;
+    return nvtec_write_byte_lock(client, reg, val);
 }
 EXPORT_SYMBOL_GPL(nvtec_write_byte);
 
 int nvtec_write_word(struct device *dev, int reg, uint16_t val)
 {
-    int ret;
+    struct i2c_client *client = to_i2c_client(dev);
+    struct nvtec *ec = i2c_get_clientdata(client);
 
-    if (nvtec->state != NVTEC_STATE_S0 ||
-        nvtec->flash_mode == 1)
+    if (ec->state != NVTEC_STATE_S0 ||
+        ec->flash_mode == 1)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_write_word(to_i2c_client(dev), reg, val);
-    mutex_unlock(&nvtec->lock);
-    
-    return ret;
+    return nvtec_write_word_lock(client, reg, val);
 }
 EXPORT_SYMBOL_GPL(nvtec_write_word);
 
 int nvtec_write_block(struct device *dev, int reg, int len, uint8_t *val)
 {
-    int ret;
+    struct i2c_client *client = to_i2c_client(dev);
+    struct nvtec *ec = i2c_get_clientdata(client);
 
-    if (nvtec->state != NVTEC_STATE_S0 ||
-        nvtec->flash_mode == 1)
+    if (ec->state != NVTEC_STATE_S0 ||
+        ec->flash_mode == 1)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_write_block(to_i2c_client(dev), reg, len, val);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
+    return nvtec_write_block_lock(client, reg, len, val);
 }
 EXPORT_SYMBOL_GPL(nvtec_write_block);
-
-int nvtec_prepare_to_power_off(void)
-{
-    return nvtec_set_state(nvtec->client, NVTEC_STATE_S4);
-}
-EXPORT_SYMBOL_GPL(nvtec_prepare_to_power_off);
 
 int nvtec_register_event_notifier(struct device *dev, 
                                   enum nvtec_event_type event,
                                   struct notifier_block *nb)
 {
+    struct i2c_client *client = to_i2c_client(dev);
+    struct nvtec *ec = i2c_get_clientdata(client);
     int ret;
 
     switch (event) {
     case NVTEC_EVENT_UNDOCK:
-        ret = blocking_notifier_chain_register(&nvtec->undock_notifier, nb);
+        ret = blocking_notifier_chain_register(&ec->undock_notifier, nb);
         break;
     case NVTEC_EVENT_SYSTEM:
-        ret = blocking_notifier_chain_register(&nvtec->system_notifier, nb);
+        ret = blocking_notifier_chain_register(&ec->system_notifier, nb);
         break;
     case NVTEC_EVENT_BATTERY:
-        ret = blocking_notifier_chain_register(&nvtec->battery_notifier, nb);
-        break;
-    case NVTEC_EVENT_CIR:
-        ret = blocking_notifier_chain_register(&nvtec->cir_notifier, nb);
+        ret = blocking_notifier_chain_register(&ec->battery_notifier, nb);
         break;
     default:
         ret = -EINVAL;
@@ -383,20 +403,19 @@ int nvtec_unregister_event_notifier(struct device *dev,
                                     enum nvtec_event_type event,
                                     struct notifier_block *nb)
 {
+    struct i2c_client *client = to_i2c_client(dev);
+    struct nvtec *ec = i2c_get_clientdata(client);
     int ret;
 
     switch (event) {
     case NVTEC_EVENT_UNDOCK:
-        ret = blocking_notifier_chain_unregister(&nvtec->undock_notifier, nb);
+        ret = blocking_notifier_chain_unregister(&ec->undock_notifier, nb);
         break;
     case NVTEC_EVENT_SYSTEM:
-        ret = blocking_notifier_chain_unregister(&nvtec->system_notifier, nb);
+        ret = blocking_notifier_chain_unregister(&ec->system_notifier, nb);
         break;
     case NVTEC_EVENT_BATTERY:
-        ret = blocking_notifier_chain_unregister(&nvtec->battery_notifier, nb);
-        break;
-    case NVTEC_EVENT_CIR:
-        ret = blocking_notifier_chain_unregister(&nvtec->cir_notifier, nb);
+        ret = blocking_notifier_chain_unregister(&ec->battery_notifier, nb);
         break;
     default:
         ret = -EINVAL;
@@ -413,10 +432,7 @@ static int nvtec_get_firmware_version(struct i2c_client *client, uint8_t *ver_st
     char version[32];
     int len;
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_block(client, 0xC0, 32, version);
-    mutex_unlock(&nvtec->lock);
-
+    ret = nvtec_read_block_lock(client, 0xC0, 32, version);
     if (ret < 0)
         return ret;
 
@@ -424,549 +440,253 @@ static int nvtec_get_firmware_version(struct i2c_client *client, uint8_t *ver_st
     strncpy(ver_str, &version[1], len);
     ver_str[len] = '\0';
 
-    /* Daniel Wang */
-    if ((version[16]=='5') && (version[17] =='A'))
-    {
-	printk("nvtec: M0516LBN 64KB \n");
+    if ((version[16]=='5') && (version[17] =='A')) {
+        dev_info(&client->dev, "MCU chip: M0516LBN 64KB \n");
+    } else {
+        dev_err(&client->dev, "Unknow MCU Chip Set to default %d KB\n",
+                NVTEC_MAX_FW_SIZE/1024);
     }
-    else
-    {
-	printk("nvtec: Unknow MCU Chip Set to default %d KB\n",NVTEC_MAX_FW_SIZE/1024);	
-    }
-	
+
     return ret;
-}
-
-static int cmd_ack = 0;
-
-int nvtec_battery_get_level(void)
-{
-	uint16_t cap = 0;
-	uint16_t val = 0;
-	int level = 0;
-	int ret;
-
-	mutex_lock(&nvtec->lock);
-	ret = __nvtec_read_word(nvtec->client, 0x0D, &cap);
-	mutex_unlock(&nvtec->lock);
-
-    if (ret < 0 || cap < 0 || cap > 100)
-    {
-		return -EINVAL;
-    }
-
-    if (cap < 5)
-		val = 0;
-	else
-		val = (int)(cap-5)*100/95;
-
-	if ((val >= 0) && (val <= 5))
-		level = 0;
-	else if ((val > 5) && (val <= 35))
-		level = 1;
-	else if ((val > 35) && (val <= 70))
-		level = 2;
-	else if ((val > 70) && (val <= 99))
-		level = 3;
-	else
-		level = 4;
-
-    return level;
-}
-
-int nvtec_battery_full_charged(void)
-{
-	uint16_t val = 0;
-	int ret;
-	int full_charged;
-
-	mutex_lock(&nvtec->lock);
-	ret = __nvtec_read_word(nvtec->client, 0x16, &val);
-	mutex_unlock(&nvtec->lock);
-
-    if (ret < 0 )
-    {
-		return -EINVAL;
-    }
-
-	if (val & 0x0020)
-		full_charged = 1;
-	else
-		full_charged = 0;
-
-    return full_charged;
-}
-
-int nvtec_hw_button_lock_configured(void)
-{
-	uint8_t val = 0;
-	int ret;
-	int configured;
-
-	mutex_lock(&nvtec->lock);
-	ret = __nvtec_read_byte(nvtec->client, 0xD2, &val);
-	mutex_unlock(&nvtec->lock);
-
-    if (ret < 0 )
-    {
-		return -EINVAL;
-    }
-
-	if (val)
-		configured = NV_TRUE;
-	else
-		configured = NV_FALSE;
-
-    return configured;
-}
-
-int nvtec_mcu_chk_version(void)
-{
-	int ret;
-	char version[32];
-	int a, b, c;
-	int i, offset=0;
-
-	memset(version, '\0', sizeof(version));
-
-	mutex_lock(&nvtec->lock);
-	ret = __nvtec_read_block(nvtec->client, 0xC0, 32, version);
-	mutex_unlock(&nvtec->lock);
-
-    if (ret < 0) {
-        return -ENODEV;
-    }
-
-	for (i=0; i<32; i++) {
-		if (version[i] == 'A') {
-			offset = i;
-			break;
-		}
-	}
-
-	a = version[offset+11]-'0';
-	b = version[offset+12]-'0';
-	c = 10*a +  b;
-
-	//printk("version=%s, a=%d, b=%d, ab=%d\n", version, a, b,c);
-
-	if (c > 6) //after T07 or V07 (include)
-		return 1;
-	else
-		return 0;
 }
 
 static int nvtec_enter_flash_mode(struct i2c_client *client, uint16_t magic)
 {
+    struct nvtec *ec = i2c_get_clientdata(client);
     uint16_t event;
     int ret;
 
-    percentage = 0;	/* Daniel Wang */
+    percentage = 0;
 
-    if (nvtec->flash_mode) {
-        printk("nvtec: already in flash mode\n");
+    if (ec->flash_mode) {
+        dev_warn(&client->dev, "already in flash mode\n");
         return 0;
     }
 
-    if (nvtec->state != NVTEC_STATE_S0) {
-        printk("nvtec: EC not in S0 state\n");
+    if (ec->state != NVTEC_STATE_S0) {
+        dev_err(&client->dev, "EC not in S0 state\n");
         return -EINVAL;
     }
 
     if (magic != NVTEC_MAGIC_ENTER_FLASH_MODE_DEFAULT &&
         magic != NVTEC_MAGIC_ENTER_FLASH_MODE_CONFIG) {
-        printk("nvtec: Invalid magic number\n");
+        dev_err(&client->dev, "Invalid magic number\n");
         return -EINVAL;
     }
 
-    /* Daniel Wang */
-    if (upgrade_lock_flag == NV_FALSE){
-    	wake_lock(&upgrade_lock);
-	upgrade_lock_flag = NV_TRUE;
-	printk("nvtec: upgrade wake_lock locked\n");
-    }
+    wake_lock(&ec->upgrade_lock);
+    dev_info(&client->dev, "upgrade wake_lock locked\n");
 
     suspend_battery_thread();
 
-    mutex_lock(&nvtec->lock);
+    mutex_lock(&ec->lock);
 
     /* clean event */
-    while (gpio_get_value(nvtec->ap_wake_pin) == 0) {
+    while (gpio_get_value(ec->ap_wake_pin) == 0) {
         ret = nvtec_read_event(client, &event);
         if (ret < 0 || event == 0)
             break;
     }
 
-    printk("nvtec: enter flash mode\n");
-    nvtec->flash_mode = 1;
+    dev_info(&client->dev, "Enter flash mode\n");
+    ec->flash_mode = 1;
     
     cmd_ack = 0;
     ret= __nvtec_write_word(client, 0xe0, magic);
     if (ret < 0) {
-        nvtec->flash_mode = 0;
-        mutex_unlock(&nvtec->lock);
-        return ret;
+        dev_err(&client->dev, "Error set magic number\n");
+        goto error;
     }
-    
-    wait_event(nvtec->wq_ack, cmd_ack == 1);
 
-    mutex_unlock(&nvtec->lock);
-    
+    dev_info(&client->dev, "Waiting for MCU acknowledge\n");
+    wait_event(ec->wq_ack, cmd_ack == 1);
+	dev_info(&client->dev, "MCU Ack OK...continue...\n");
+
+    mutex_unlock(&ec->lock);
     return 0;
+ error:
+    ec->flash_mode = 0;
+    mutex_unlock(&ec->lock);
+    wake_unlock(&ec->upgrade_lock);
+    return ret;
 }
 
 static int nvtec_exit_flash_mode(struct i2c_client *client, uint16_t magic)
 {
+    struct nvtec *ec = i2c_get_clientdata(client);
     int ret;
 
-    if (nvtec->flash_mode == 0)
+    if (ec->flash_mode == 0)
         return -EINVAL;
 
     if (magic != NVTEC_MAGIC_EXIT_FLASH_MODE) {
-        printk("nvtec: Invalid magic number\n");
+        dev_err(&client->dev, "Invalid magic number\n");
         return -EINVAL;
     }
 
-    mutex_lock(&nvtec->lock);
+    mutex_lock(&ec->lock);
 
     cmd_ack = 0;
     ret = __nvtec_write_word(client, 0xe3, magic);
     if (ret < 0) {
-    	mutex_unlock(&nvtec->lock);
+        mutex_unlock(&ec->lock);
         return ret;
     }
 
-    wait_event(nvtec->wq_ack, cmd_ack == 1);
+    wait_event(ec->wq_ack, cmd_ack == 1);
 
-    printk("nvtec: exit flash mode\n");
+    dev_info(&client->dev, "Exit flash mode\n");
     
-    nvtec->flash_mode = 0;
+    ec->flash_mode = 0;
 
-    mutex_unlock(&nvtec->lock);
+    mutex_unlock(&ec->lock);
 
-    /* Daniel Wang */
     /* EC will reset itself when exit flash mode */
     /* after reset, EC at S0 state Scorpio */
-    nvtec->state = NVTEC_STATE_S0; 
+    ec->state = NVTEC_STATE_S0;
 
     resume_battery_thread();
 
-    /* Daniel Wang */
-    if (upgrade_lock_flag == NV_TRUE){
-    	wake_unlock(&upgrade_lock);
-	upgrade_lock_flag = NV_FALSE;
-	printk("nvtec: upgrade wake_lock unlocked\n");
-    }
+    wake_unlock(&ec->upgrade_lock);
+    dev_info(&client->dev, "upgrade wake_lock unlocked\n");
 
     return 0;
 }
 
-static int nvtec_enter_data_flash_mode(struct i2c_client *client, uint16_t temp)
+static int nvtec_set_switch_lock_enable(struct i2c_client *client, bool lock_enable)
 {
-    if (nvtec->data_flash_mode) {
-        printk("nvtec: already in data flash mode\n");
-        return 0;
-    }
-
-    if (nvtec->state != NVTEC_STATE_S0) {
-        printk("nvtec: EC not in S0 state\n");
-        return -EINVAL;
-    }
-
-    if (upgrade_lock_flag == NV_FALSE){
-    	wake_lock(&upgrade_lock);
-	upgrade_lock_flag = NV_TRUE;
-	printk("nvtec: upgrade wake_lock locked\n");
-    }
-
-    suspend_battery_thread();
-
-    mutex_lock(&nvtec->lock);
-
-    nvtec->data_flash_mode = 1;
-    printk("nvtec: enter data flash mode\n");
-
-    mutex_unlock(&nvtec->lock);
-    
-    return 0;
+    return nvtec_write_byte_lock(client, 0xd2, (lock_enable == true) ? 1 : 0);
 }
 
-static int nvtec_exit_data_flash_mode(struct i2c_client *client, unsigned short *err)
+static int nvtec_get_switch_lock_enable(struct i2c_client *client, bool *lock_enabled)
 {
-    int ret = 0 ;
-    uint8_t return_value [21] ; 
+    int ret;
+    uint8_t status;
 
-    if (nvtec->data_flash_mode == 0)
-        return -EINVAL;
-    ret = __nvtec_read_block(client, 0xc2, 21, return_value);
-    if (ret != 0)
-	return -EINVAL;
 
-    *err = 0x0F;
-
-    if (return_value[1] != 0){
-	printk("nvtec: dat flash upgrading ... waiting [%d] [%d]\n", return_value[0] ,return_value[1]);
-	data_flash_return = *err;
-	return 0;
-    }else if(return_value[2] != 0){
-	printk("nvtec: data flash checksum  ... Fail \n");
-	*err &= 0x07;
-    }else if(return_value[3] != 0){
-	printk("nvtec: data flash binary    ... Fail \n");
-	*err &= 0x03;
-    }else if(return_value[4] != 0){
-	printk("nvtec: data flash upgrade   ... Fail \n");
-	*err &= 0x01;
-    }else{
-	printk("nvtec: data flash upgrade   ... Successed \n");
-	*err &= 0x00;
-    }
-    
-    data_flash_return = *err;
-
-    mutex_lock(&nvtec->lock);
-    nvtec->data_flash_mode = 0;
-    printk("nvtec: exit data flash mode\n");
-    mutex_unlock(&nvtec->lock);
-
-    resume_battery_thread();
-
-    if (upgrade_lock_flag == NV_TRUE){
-    	wake_unlock(&upgrade_lock);
-	upgrade_lock_flag = NV_FALSE;
-	printk("nvtec: upgrade wake_lock unlocked\n");
-    }
-
-    return 0;
-}
-
-static int nvtec_set_lock_key_status(struct i2c_client *client, char *status)
-{
-    int i;
-    int ret = 0;
-
-    for (i=0;i<3;i++){
-	if (!strcmp(status,lock_mode[i].mode)){
-	    mutex_lock(&nvtec->lock);
-	    ret = __nvtec_write_byte(client, 0xd2, lock_mode[i].raw);
-	    mutex_unlock(&nvtec->lock);
-	    if (ret < 0)
-		return ret;
-	    /*printk("%s Set Lock key with [%s]\n", __func__,status);*/
-	    break;
-	}else if (i == 2){
-	    printk("nvtec: %s Unknow command [%s] \n", __func__,status);
-	    break;
-	}
-    } 
-    return ret;
-}
-
-static int nvtec_get_lock_key_status(struct i2c_client *client, char *status)
-{
-    int i;
-    int  ret = 0;
-    uint8_t raw_data;
-
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_byte(client, 0xd2, &raw_data);
-    mutex_unlock(&nvtec->lock);
+    ret = nvtec_read_byte_lock(client, 0xd2, &status);
     if (ret < 0)
-	return ret;
-    
-    for (i=0;i<3;i++){
-	if (raw_data == lock_mode[i].raw){
-	    strcpy(status,lock_mode[i].mode);
-	    /*printk("%s Get Lock key status [%s]\n", __func__,status);*/
+        return ret;
 
-	    if (nvtec != NULL)
-            	nvtec->lock_state = i;
-	    else
-		printk("%s: nvtec is NULL\n", __func__);
-
-	    break;
-	}else if (i == 2){
-	    strcpy(status,"unknow"); 
-	    printk("nvtec: %s Get Lock key status [%s]\n", __func__,status);
-	    break;
-	} 
-    }
-
+    *lock_enabled = (status) ? true : false;
     return ret;
 }
 
-bool nvtec_get_lock_key_enabled() {
-	printk("%s enter\n", __func__);
-	if (nvtec == NULL) {
-		printk("%s: nvtec is NULL\n", __func__);
+bool nvtec_is_switch_lock_enabled(void) {
+	if (g_nvtec == NULL) {
+		dev_err(g_nvtec->dev, "%s: nvtec is NULL\n", __func__);
 		return false;
 	} else {
-		return (nvtec->lock_state == 0);
+		return g_nvtec->switch_lock_enabled;
 	}
 }
-EXPORT_SYMBOL_GPL(nvtec_get_lock_key_enabled);
+EXPORT_SYMBOL_GPL(nvtec_is_switch_lock_enabled);
 
-static int switch_gpio_notify(struct notifier_block *nb, unsigned long state, void *unused)
+static int switch_lock_notify(struct notifier_block *nb, unsigned long state, void *unused)
 {
 	struct nvtec *ec = container_of(nb, struct nvtec, switch_gpio_notifier); 
 	struct i2c_client *client = ec->client;
 
-	if (client == NULL) {
-		printk("%s: i2c client is NULL\n", __func__);
-		return NOTIFY_OK;
-	}
-
-	/*printk("%s: getting state %ld\n", __func__, state);*/
-
-	if (state == SWITCH_LOCK_ENABLED) {
-		nvtec_set_lock_key_status(client, "lock");
-	} else if (state == SWITCH_LOCK_DISABLED) {
-		nvtec_set_lock_key_status(client, "unlock");
-	} else {
-		printk("%s: state %ld is wrong\n", __func__, state);
-	}
+    ec->switch_lock_enabled = (state == SWITCH_LOCK_ENABLED) ? true : false;
+    nvtec_set_switch_lock_enable(client, ec->switch_lock_enabled);
 	return NOTIFY_OK;
 }
 
 static int nvtec_get_flash_id(struct i2c_client *client, uint8_t *id)
 {
-    int ret;
-
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_block(client, 0xc1, 32, id);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
+    return nvtec_read_block_lock(client, 0xc1, 32, id);
 }
 
 static int nvtec_get_state(struct i2c_client *client, uint16_t *state)
 {
-    int ret;
-
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_word(client, 0xd1, state);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
+    return nvtec_read_word_lock(client, 0xd1, state);
 }
 
 static int nvtec_set_state(struct i2c_client *client, uint16_t state)
 {
+    struct nvtec *ec = i2c_get_clientdata(client);
     int ret = 0;
 
     if (state > NVTEC_STATE_S4 &&
         state != NVTEC_STATE_TEST &&
         state != NVTEC_STATE_RESET &&
-	state != NVTEC_STATE_FACTORY &&
-	state != NVTEC_STATE_TEST1 &&
-	state != NVTEC_STATE_TEST2 &&
-	state != NVTEC_STATE_TEST3 &&
-	state != NVTEC_STATE_TEST4 &&
-	state != NVTEC_STATE_TEST5 &&
-	state != NVTEC_STATE_TEST6 &&
-	state != NVTEC_STATE_TEST7 &&
-	state != NVTEC_STATE_TEST8 &&
-	state != NVTEC_STATE_TEST9 &&
-	state != NVTEC_STATE_TESTA &&
-	state != NVTEC_STATE_DISABLE &&
-	state != NVTEC_STATE_SHIP)
+        state != NVTEC_STATE_FACTORY &&
+        state != NVTEC_STATE_TEST1 &&
+        state != NVTEC_STATE_TEST2 &&
+        state != NVTEC_STATE_TEST3 &&
+        state != NVTEC_STATE_TEST4 &&
+        state != NVTEC_STATE_TEST5 &&
+        state != NVTEC_STATE_TEST6 &&
+        state != NVTEC_STATE_TEST7 &&
+        state != NVTEC_STATE_TEST8 &&
+        state != NVTEC_STATE_TEST9 &&
+        state != NVTEC_STATE_TESTA &&
+        state != NVTEC_STATE_DISABLE &&
+        state != NVTEC_STATE_SHIP)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
-    /* Daniel Wang */
-    if (nvtec->state == NVTEC_STATE_S0){
-	if (state == NVTEC_STATE_S3){
-		/* Suspend 	1> send cmd 2> trigger gpio (EC_1 = 1->0  EC_2 = 1->1) */	
-		ret = __nvtec_write_word(client, 0xd1, state);
-		gpio_set_value(nvtec->request_pin, 0);
-		gpio_set_value(nvtec->pwr_state_pin, 1);
-		if ((machine_is_avalon()) && (nvtec->hdmi_sw_pin != 0))
-		    gpio_set_value(nvtec->hdmi_sw_pin, 0);
-		printk("nvtec: Enter suspend status (S3) \n");
-	}else if (state == NVTEC_STATE_S4){
-		/* Power off	1> send cmd 2> trigger gpio (EC_1 = 1->0  EC_2 = 1->0) */
-                //ret = __nvtec_write_word(client, 0xd1, state);
-                gpio_set_value(nvtec->request_pin, 0);
-                gpio_set_value(nvtec->pwr_state_pin, 0);
-		if ((machine_is_avalon()) && (nvtec->hdmi_sw_pin != 0))
-		    gpio_set_value(nvtec->hdmi_sw_pin, 0);
-		printk("nvtec: Enter power off status (S4) \n");		
-	}else{
-		printk("nvtec: S0 Undefined status (S%d -> S%d)\n",nvtec->state,state);
-		/* Do not change Daniel Wang */
-		ret = __nvtec_write_word(client, 0xd1, state);
-                mutex_unlock(&nvtec->lock);
-    		return ret;
-	}
-    }else{
-	if (state == NVTEC_STATE_S0){
+    mutex_lock(&ec->lock);
+
+    if (ec->state == NVTEC_STATE_S0) {
+        if (state == NVTEC_STATE_S3) {
+            /* Suspend 	1> send cmd 2> trigger gpio (EC_1 = 1->0  EC_2 = 1->1) */
+            ret = __nvtec_write_word(client, 0xd1, state);
+            gpio_set_value(ec->request_pin, 0);
+            gpio_set_value(ec->pwr_state_pin, 1);
+            if ((machine_is_avalon()) && (ec->hdmi_sw_pin != 0))
+                gpio_set_value(ec->hdmi_sw_pin, 0);
+            dev_info(&client->dev, "Enter suspend state (S3)\n");
+        } else if (state == NVTEC_STATE_S4) {
+            /* Power off	1> send cmd 2> trigger gpio (EC_1 = 1->0  EC_2 = 1->0) */
+            //ret = __nvtec_write_word(client, 0xd1, state);
+            gpio_set_value(ec->request_pin, 0);
+            gpio_set_value(ec->pwr_state_pin, 0);
+            if ((machine_is_avalon()) && (ec->hdmi_sw_pin != 0))
+                gpio_set_value(ec->hdmi_sw_pin, 0);
+            dev_info(&client->dev, "Enter power off state (S4)\n");
+        } else {
+            ret = __nvtec_write_word(client, 0xd1, state);
+            dev_warn(&client->dev, "Invalid State (S%d -> S%d)\n", ec->state, state);
+            mutex_unlock(&ec->lock);
+            return ret;
+        }
+    } else {
+        if (state == NVTEC_STATE_S0) {
     		/* Resume   1> trigger gpio 2> send cmd (EC_1 = 0->1  EC_2 = 1->1) */
-		gpio_set_value(nvtec->request_pin, 1);
-		gpio_set_value(nvtec->pwr_state_pin, 1);
-		if ((machine_is_avalon()) && (nvtec->hdmi_sw_pin != 0))
-		    gpio_set_value(nvtec->hdmi_sw_pin, 1);
-		//ret = __nvtec_write_word(client, 0xd1, state);
-                msleep(30);
-		printk("nvtec: Enter resume status (S0) \n");
-	}else{
-		printk("nvtec: non-S0 Undefined status (S%d -> S%d)\n",nvtec->state,state);
-		/* Do not change Daniel Wang */
-		ret = __nvtec_write_word(client, 0xd1, state);
-                mutex_unlock(&nvtec->lock);
-    		return ret;
-	}
+            gpio_set_value(ec->request_pin, 1);
+            gpio_set_value(ec->pwr_state_pin, 1);
+            if ((machine_is_avalon()) && (ec->hdmi_sw_pin != 0))
+                gpio_set_value(ec->hdmi_sw_pin, 1);
+            //ret = __nvtec_write_word(client, 0xd1, state);
+            msleep(30);
+            dev_info(&client->dev, "Enter operation state (S0)\n");
+        } else {
+            dev_warn(&client->dev, "Invalid state (S%d -> S%d)\n", ec->state, state);
+            ret = __nvtec_write_word(client, 0xd1, state);
+            mutex_unlock(&ec->lock);
+            return ret;
+        }
     }
-    nvtec->state = state;
-    mutex_unlock(&nvtec->lock);
+    ec->state = state;
+    mutex_unlock(&ec->lock);
     return ret;
-}
-
-static int nvtec_get_board_version (struct i2c_client *client, unsigned short *board_id){
-
-    if (machine_is_avalon()){
-	printk("nvtec: machine_is_avalon \n");
-	*board_id = 0;	
-    }else if (machine_is_sphinx()){
-	printk("nvtec: machine_is_sphinx \n");
-	*board_id = 1;
-    }else if (machine_is_titan()){
-	printk("nvtec: machine_is_titan \n");
-	*board_id = 2;
-    }else{
-	printk("nvtec: machine unknow \n");
-	return -EINVAL;
-    }
-    return 0;
 }
 
 static int nvtec_get_hdmi_sw_mode(struct i2c_client *client, uint16_t *mode)
 {
-    int ret;
-
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_word(client, 0xd2, mode);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
+    return nvtec_read_word_lock(client, 0xd2, mode);
 }
 
 static int nvtec_set_hdmi_sw_mode(struct i2c_client *client, uint16_t mode)
 {
-    int ret;
-
     if (mode > NVTEC_HDMI_SW_MAX)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_write_word(client, 0xd2, mode);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
+    return nvtec_write_word_lock(client, 0xd2, mode);
 }
 
 static int nvtec_set_hdmi_p1_strength(struct i2c_client *client, int strength)
 {
-    int ret;
     uint16_t value;
 
     if (strength > 3)
@@ -974,16 +694,11 @@ static int nvtec_set_hdmi_p1_strength(struct i2c_client *client, int strength)
     
     value = (0x0d << 8) | (strength & 0xff);
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_write_word(client, 0xd3, value);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
+    return nvtec_write_word_lock(client, 0xd3, value);
 }
 
 static int nvtec_set_hdmi_p2_strength(struct i2c_client *client, int strength)
 {
-    int ret;
     uint16_t value;
 
     if (strength > 3)
@@ -991,93 +706,61 @@ static int nvtec_set_hdmi_p2_strength(struct i2c_client *client, int strength)
 
     value = (0x0C << 8) | (strength & 0xff);
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_write_word(client, 0xd3, value);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
+    return nvtec_write_word_lock(client, 0xd3, value);
 }
-
-/* Daniel Wang */
-static int nvtec_get_led_mode(struct i2c_client *client, uint16_t *mode)
-{
-    /* [Patch from Ants] Fine tune EC driver to enhance the communication between tegra and EC */
-    int ret;
-
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_word(client, 0xd9, mode);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
-}
-
-/* Daniel Wang */
-static int nvtec_set_led_mode(struct i2c_client *client, uint16_t mode)
-{
-    /* [Patch from Ants] Fine tune EC driver to enhance the communication between tegra and EC */
-    int ret;
-
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_write_word(client, 0xd9, mode);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
-}
-
-/* static int nvtec_reset(struct i2c_client *client) */
-/* { */
-/*     return nvtec_set_state(client, NVTEC_STATE_RESET); */
-/* } */
-
-/* static int nvtec_test_mode(struct i2c_client *client) */
-/* { */
-/*     return nvtec_set_state(client, NVTEC_STATE_TEST); */
-/* } */
 
 static int nvtec_read_gpio_input(struct i2c_client *client, uint8_t port, uint8_t *val)
 {
-	int ret;
-
     if (port > 9)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_byte(client, 0xa0 + port, val);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
+    return nvtec_read_byte_lock(client, 0xa0 + port, val);
 }
 
 static int nvtec_read_gpio_output(struct i2c_client *client, uint8_t port, uint8_t *val)
 {
-	int ret;
-
     if (port > 9)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_read_byte(client, 0xb0 + port, val);
-    mutex_unlock(&nvtec->lock);
-
-    return ret;
+    return nvtec_read_byte_lock(client, 0xb0 + port, val);
 }
 
 static int nvtec_set_gpio_output(struct i2c_client *client, uint8_t port, uint8_t val)
 {
-	int ret;
-
     if (port > 9)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
-    ret = __nvtec_write_byte(client, 0xb0 + port, val);
-    mutex_unlock(&nvtec->lock);
+    return nvtec_write_byte_lock(client, 0xb0 + port, val);
+}
 
-    return ret;
+static inline void show_progress(int percent)
+{
+    static int prev_percent = -1;
+    int i;
+    int c;
+
+    if (prev_percent == percent)
+        return;
+
+    prev_percent = percent;
+    c = (percent * 50) / 100;
+
+    // Show the percentage complete.
+    printk("nvtec: %3d%% [", percent );
+
+    // Show the prgress bar.
+    for (i = 0; i < c; i++)
+       printk("=");
+
+    for (i = c; i < 50; i++)
+       printk(" ");
+
+    printk("]\r");
 }
 
 static int nvtec_transfer_firmware(struct i2c_client *client, uint8_t *buffer, int len)
 {
+    struct nvtec *ec = i2c_get_clientdata(client);
     int ret;
     int byte_transferred = 0;
     int transfer_len = 0;
@@ -1085,10 +768,10 @@ static int nvtec_transfer_firmware(struct i2c_client *client, uint8_t *buffer, i
     if (NULL == buffer || len != NVTEC_MAX_FW_SIZE)
         return -EINVAL;
     
-    if (nvtec->flash_mode == 0)
+    if (ec->flash_mode == 0)
         return -EINVAL;
 
-    mutex_lock(&nvtec->lock);
+    mutex_lock(&ec->lock);
     while (byte_transferred != len) {
         if ((len - byte_transferred) >= I2C_SMBUS_BLOCK_MAX)
             transfer_len = I2C_SMBUS_BLOCK_MAX;
@@ -1101,50 +784,27 @@ static int nvtec_transfer_firmware(struct i2c_client *client, uint8_t *buffer, i
                                   &buffer[byte_transferred]);
 
         if (ret != 0) {
-            mutex_unlock(&nvtec->lock);
+            dev_err(&client->dev, "Transfer firmware fail!\n");
+            mutex_unlock(&ec->lock);
             return -EINVAL;
         }
 
         byte_transferred += transfer_len;
         
-	percentage=((byte_transferred*100)/NVTEC_MAX_FW_SIZE);	/* Daniel Wang */
-        
-        printk("nvtec:(%3d) \b\b\b\b\b\b\b\b\b\b\b\b",percentage);
-        wait_event(nvtec->wq_ack, cmd_ack == 1);
+        percentage=((byte_transferred * 100) / NVTEC_MAX_FW_SIZE);
+        show_progress(percentage);
 
-    }
-    mutex_unlock(&nvtec->lock);
-
-    return len;
-}
-
-static int nvtec_transfer_dataflash(struct i2c_client *client, uint8_t *buffer, int len){
-    int ret = 0;
-    
-    if (NULL == buffer || len != NVTEC_MAX_DATAFLASH_SIZE)
-        return -EINVAL;
-    
-    if (nvtec->data_flash_mode == 0)
-	return -EINVAL;
-
-    mutex_lock(&nvtec->lock);
-
-    ret = __nvtec_write_block(client, 0xc2,
-				len,
-				&buffer[0]);
-
-    if (ret != 0) {
-        mutex_unlock(&nvtec->lock);
-        return -EINVAL;
+        wait_event(ec->wq_ack, cmd_ack == 1);
     }
 
-    mutex_unlock(&nvtec->lock);
+    mutex_unlock(&ec->lock);
 
     return len;
 }
 
 static int nvtec_flash_acknowledge(struct i2c_client *client)
 {
+    struct nvtec *ec = i2c_get_clientdata(client);
     uint8_t value;
     int ret;
 
@@ -1155,8 +815,7 @@ static int nvtec_flash_acknowledge(struct i2c_client *client)
 
     if (value == 0xfa) {
         cmd_ack = 1;
-        wake_up(&nvtec->wq_ack);
-        
+        wake_up(&ec->wq_ack);
         return 0;
     } else
         return -EFAULT;
@@ -1215,17 +874,13 @@ static irqreturn_t nvtec_irq(int irq, void *data)
         ret = nvtec_flash_acknowledge(ec->client);
         return IRQ_HANDLED;
     }
- 
+
     nvtec_read_event(ec->client, &event);
     event_type = (uint8_t)(event >> 8) & 0xff;
 
     switch (event_type) {
     case NVTEC_EVENT_UNDOCK:
         blocking_notifier_call_chain(&ec->undock_notifier, event, NULL);
-        break;
-    case NVTEC_EVENT_CIR:
-    case NVTEC_EVENT_CIR_REPEAT:
-        blocking_notifier_call_chain(&ec->cir_notifier, event, NULL);
         break;
     case NVTEC_EVENT_BATTERY:
         blocking_notifier_call_chain(&ec->battery_notifier, event, NULL);
@@ -1254,6 +909,15 @@ static int __devinit nvtec_irq_init(struct nvtec *ec, int irq)
     return ret;
 }
 
+static int nvtec_open(struct inode *inode, struct file *file)
+{
+    struct miscdevice *mdev = file->private_data;
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
+
+    file->private_data = ec;
+    return nonseekable_open(inode, file);
+}
+
 static ssize_t nvtec_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
     return -EINVAL;
@@ -1261,62 +925,46 @@ static ssize_t nvtec_read(struct file *file, char __user *buf, size_t count, lof
 
 static ssize_t nvtec_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
+    struct nvtec *ec = file->private_data;
     int ret = 0;
     uint8_t *fw_buf;
-    int i;
 
-    if (count == NVTEC_MAX_FW_SIZE){
+    dev_info(ec->dev, "Start firmware upgrade\n");
 
-        fw_buf = kzalloc(NVTEC_MAX_FW_SIZE, GFP_KERNEL);
-
-        if (!fw_buf)
-	    return -ENOMEM;
-
-        memset(fw_buf, 0, NVTEC_MAX_FW_SIZE);
-
-        if (copy_from_user(fw_buf, buf, count))
-	    goto error;
-
-        ret = nvtec_transfer_firmware(nvtec->client, fw_buf, count);
-	if (ret != count)
-	    goto error;
-
-        kfree(fw_buf);
-	return count;
-
-    }else if (count == NVTEC_MAX_DATAFLASH_SIZE){
-
-        fw_buf = kzalloc(NVTEC_MAX_DATAFLASH_SIZE, GFP_KERNEL);
-
-        if (!fw_buf)
-	    return -ENOMEM;
-
-	memset(fw_buf, 0, NVTEC_MAX_DATAFLASH_SIZE);
-
-        if (copy_from_user(fw_buf, buf, count))
-
-	printk("\n");
-
-	for (i=0;i<count;i++)
-            printk("0x%02X ",*(fw_buf+i));
-
-	printk("\n");
-
-	ret = nvtec_transfer_dataflash(nvtec->client, fw_buf, count);
-	if (ret != count){
-	    printk("nvtec: ret = %d , count = %d \n", ret, count);
-	    goto error;
-	}
-
-        kfree(fw_buf);
-	return count;
-    
-    }else{
-	return -ENOMEM; 
+    if (ec->flash_mode == 0) {
+        dev_err(ec->dev, "Not in flash mode\n");
+        return -EACCES;
     }
 
+    if (count != NVTEC_MAX_FW_SIZE) {
+        dev_err(ec->dev, "Invalid firmware size\n");
+        return -EACCES;
+    }
+
+    dev_info(ec->dev, "Allocate firmware buffer!\n");
+    fw_buf = kzalloc(NVTEC_MAX_FW_SIZE, GFP_KERNEL);
+    if (!fw_buf) {
+        dev_err(ec->dev, "Fail to allocate firmware buffer\n");
+        return -ENOMEM;
+    }
+
+    memset(fw_buf, 0, NVTEC_MAX_FW_SIZE);
+
+    dev_info(ec->dev, "Copy firmware to buffer\n");
+    if (copy_from_user(fw_buf, buf, count))
+        goto error;
+
+    ret = nvtec_transfer_firmware(ec->client, fw_buf, count);
+    if (ret != count) {
+        dev_err(ec->dev, "Invalid firmware size\n");
+        goto error;
+    }
+
+    kfree(fw_buf);
+    return count;
+
  error:
-    printk("nvtec: nvtec_write fail!\n");
+    dev_err(ec->dev, "Fail to upgrade firmware\n");
     kfree(fw_buf);
     return -EINVAL;
 }
@@ -1329,27 +977,16 @@ struct flash_id {
 #define NVTEC_IOCTL_EXIT_FLASH     _IOW('N', 2, unsigned short)
 #define NVTEC_IOCTL_SET_CONFIG     _IOW('N', 3, int)
 #define NVTEC_IOCTL_GET_FLASH_ID   _IOR('N', 3, struct flash_id)
-#define NVTEC_IOCTL_SET_LED_CONFIG _IOW('N', 4, unsigned int)
-#define NVTEC_IOCTL_GET_LED_CONFIG _IOR('N', 5, unsigned int)
 #define NVTEC_IOCTL_SET_STATE_CONFIG _IOW('N', 6, unsigned int)
-#define NVTEC_IOCTL_GET_BOARD_ID   _IOR('N', 7, unsigned short)
-#define NVTEC_ENTER_DATA_FLASH_MODE _IOW('N', 8, unsigned short)
-#define NVTEC_EXIT_DATA_FLASH_MODE  _IOR('N', 9, unsigned short)
-#define NVTEC_IOCTL_SET_LOCK_KEY    _IOW('N', 10, char *)
-#define NVTEC_IOCTL_GET_LOCK_KEY    _IOR('N', 11, char *)
 
 static long nvtec_ioctl(struct file *filp, unsigned int cmd, 
                        unsigned long arg)
 {
+    struct nvtec *ec = filp->private_data;
     void __user *argp = (void __user *)arg;
     int ret = -EINVAL;
     uint16_t magic;
-    uint16_t temp = 0;
-    uint16_t err;
-    uint16_t raw_config;
     uint16_t state_config;
-    uint16_t id;
-    char command[MAXLEN];
 
     switch (cmd) {
     case NVTEC_IOCTL_ENTER_FLASH:
@@ -1357,7 +994,7 @@ static long nvtec_ioctl(struct file *filp, unsigned int cmd,
         if (ret)
             return -EFAULT;
 
-        ret = nvtec_enter_flash_mode(nvtec->client, magic);
+        ret = nvtec_enter_flash_mode(ec->client, magic);
         if (ret < 0)
             return -EFAULT;
         
@@ -1368,7 +1005,7 @@ static long nvtec_ioctl(struct file *filp, unsigned int cmd,
         if (ret)
             return -EFAULT;
 
-        ret = nvtec_exit_flash_mode(nvtec->client, magic);
+        ret = nvtec_exit_flash_mode(ec->client, magic);
         if (ret < 0)
             return -EFAULT;
         
@@ -1379,82 +1016,15 @@ static long nvtec_ioctl(struct file *filp, unsigned int cmd,
 
     case NVTEC_IOCTL_GET_FLASH_ID:
         break;
-    /* Daniel Wang */
-    case NVTEC_IOCTL_SET_LED_CONFIG:
-    	ret = copy_from_user(&raw_config, argp, sizeof(uint16_t));
-	if (ret < 0)
-	    return -EFAULT;
-	if (raw_config == 0x0)
-	    raw_config = default_mcu_mode ? 0x0 : 0x200;
-	ret = nvtec_set_led_mode(nvtec->client,raw_config);
-	if (ret < 0)
-	    return -EFAULT;
-	ret = 0;
-    	break;
-    case NVTEC_IOCTL_GET_LED_CONFIG:
-	ret = nvtec_get_led_mode(nvtec->client,&raw_config);
-	if (ret < 0)
-	    return -EFAULT;
-	if (raw_config == 0x0 || raw_config == 0x200)
-	    raw_config = 0;
-	ret = copy_to_user(argp, &raw_config,sizeof(uint16_t));
-	if (ret < 0)
-	    return -EFAULT;
-	ret = 0;
-	break;
     case NVTEC_IOCTL_SET_STATE_CONFIG:
     	ret = copy_from_user(&state_config, argp, sizeof(uint16_t));
-	if (ret < 0)
-	    return -EFAULT;
-	ret = nvtec_set_state(nvtec->client, state_config);
-	if (ret < 0)
+        if (ret < 0)
+            return -EFAULT;
+        ret = nvtec_set_state(ec->client, state_config);
+        if (ret < 0)
             return -EACCES;
-	ret = 0;
-    	break;
-    case NVTEC_IOCTL_GET_BOARD_ID:
-	ret = nvtec_get_board_version(nvtec->client, &id);
-	if (ret < 0)
-	   return -EFAULT; 
-	ret = copy_to_user(argp, &id,sizeof(uint16_t));
-	if (ret < 0)
-	    return -EFAULT;
-	ret = 0;
-	break;
-    case NVTEC_ENTER_DATA_FLASH_MODE:
-	ret = nvtec_enter_data_flash_mode(nvtec->client, temp);
-        if (ret < 0)
-            return -EFAULT;
         ret = 0;
-	break;
-    case NVTEC_EXIT_DATA_FLASH_MODE:
-	ret = nvtec_exit_data_flash_mode(nvtec->client, &err);
-        if (ret < 0)
-            return -EFAULT;
-	ret = copy_to_user(argp, &err,sizeof(uint16_t));
-        if (ret < 0)
-            return -EFAULT;
-        ret = 0;
-	break;
-    case NVTEC_IOCTL_SET_LOCK_KEY:
-        memset(command, 0, sizeof(command));
-    	ret = copy_from_user(command, argp, sizeof(command));
-	if (ret < 0)
-	    return -EFAULT;
-	ret = nvtec_set_lock_key_status(nvtec->client, command);
-	if (ret < 0)
-	    return -EFAULT;
-	ret = 0;
-	break;
-    case NVTEC_IOCTL_GET_LOCK_KEY:
-        memset(command, 0, sizeof(command));
-	ret = nvtec_get_lock_key_status(nvtec->client, command);
-	if (ret < 0)
-	    return -EFAULT;
-	ret = copy_to_user(argp, command,sizeof(command));
-	if (ret < 0)
-	    return -EFAULT;
-	ret = 0;
-	break;
+        break;
     default:
         break;
     }
@@ -1463,18 +1033,13 @@ static long nvtec_ioctl(struct file *filp, unsigned int cmd,
 
 }
 
+#define NVTEC_MINOR   111
 const struct file_operations nvtec_fops = {
     .owner = THIS_MODULE,
     .read = nvtec_read,
     .write = nvtec_write,
     .unlocked_ioctl = nvtec_ioctl,
-};
-
-#define NVTEC_MINOR   111
-static struct miscdevice nvtec_dev = {
-    .minor = NVTEC_MINOR,
-    .name = "nvtec",
-    .fops = &nvtec_fops,
+    .open = nvtec_open,
 };
 
 static char *get_state_string(uint16_t state)
@@ -1493,33 +1058,33 @@ static char *get_state_string(uint16_t state)
     case NVTEC_STATE_TEST:
         return "Test";
     case NVTEC_STATE_TEST1:
-	return "Test_1";
+        return "Test_1";
     case NVTEC_STATE_TEST2:
-	return "Test_2";
+        return "Test_2";
     case NVTEC_STATE_TEST3:
-	return "Test_3";
+        return "Test_3";
     case NVTEC_STATE_TEST4:
-	return "Test_4";
+        return "Test_4";
     case NVTEC_STATE_TEST5:
-	return "Test_5";
+        return "Test_5";
     case NVTEC_STATE_TEST6:
-	return "Test_6";
+        return "Test_6";
     case NVTEC_STATE_TEST7:
-	return "Test_7";
+        return "Test_7";
     case NVTEC_STATE_TEST8:
-	return "Test_8";
+        return "Test_8";
     case NVTEC_STATE_TEST9:
-	return "Test_9";
+        return "Test_9";
     case NVTEC_STATE_TESTA:
-	return "Test_A";
+        return "Test_A";
     case NVTEC_STATE_DISABLE:
-	return "Disable";
+        return "Disable";
     case NVTEC_STATE_SHIP:
-	return "Ship";
+        return "Ship";
     case NVTEC_STATE_RESET:
         return "Reset";
     case NVTEC_STATE_FACTORY:
-	return "!QAZ2wsx"; 
+        return "!QAZ2wsx";
     default:
         return NULL;
     }
@@ -1565,11 +1130,11 @@ static int str2state(const char *state_str)
     if(!strncmp("Disable", state_str, 7))
         return NVTEC_STATE_DISABLE;
     if(!strncmp("Ship_mode", state_str, 9))
-	return NVTEC_STATE_SHIP;
+        return NVTEC_STATE_SHIP;
     if(!strncmp("Reset", state_str, 5))
         return NVTEC_STATE_RESET;
     if(!strncmp("!QAZ2wsx", state_str, 8))
-	return NVTEC_STATE_FACTORY;
+        return NVTEC_STATE_FACTORY;
 
     return -1;
 }
@@ -1578,10 +1143,12 @@ static ssize_t nvtec_state_show(struct device *dev,
                                 struct device_attribute *attr,
                                 char *buf)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     int ret;
     uint16_t state;
 
-    ret = nvtec_get_state(nvtec->client, &state);
+    ret = nvtec_get_state(ec->client, &state);
     if (ret < 0)
         return 0;
 
@@ -1593,21 +1160,19 @@ static ssize_t nvtec_state_store(struct device *dev,
                                  const char *buf,
                                  size_t count)
 {
-    /* NvBool ret; */
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     int ret;
     int state;
 
     state = str2state(buf);
-    printk("state = 0x%x\n", state);
-    if (state < 0){
-	printk("nvtec: Error Unknow state \n");
-	return count;
-    }
+    dev_info(dev, "state = %d\n", state);
+    if (state < 0)
+        return 0;
         
-    ret = nvtec_set_state(nvtec->client, (uint16_t) state);
-    if (ret < 0){
-	printk("nvtec: Error configure fail \n");	
-    }
+    ret = nvtec_set_state(ec->client, (uint16_t) state);
+    if (ret < 0)
+        return 0;
     
     return count;
 }
@@ -1616,10 +1181,12 @@ static ssize_t nvtec_version_show(struct device *dev,
                                 struct device_attribute *attr,
                                 char *buf)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     int ret;
     char version[32];
     
-    ret = nvtec_get_firmware_version(nvtec->client, version);
+    ret = nvtec_get_firmware_version(ec->client, version);
     if (ret < 0)
         return 0;
 
@@ -1630,10 +1197,12 @@ static ssize_t nvtec_flash_id_show(struct device *dev,
                                    struct device_attribute *attr,
                                    char *buf)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     int ret;
     char flash_id[32];
     
-    ret = nvtec_get_flash_id(nvtec->client, flash_id);
+    ret = nvtec_get_flash_id(ec->client, flash_id);
     if (ret < 0)
         return 0;
 
@@ -1680,10 +1249,12 @@ static ssize_t nvtec_hdmi_switch_show(struct device *dev,
                                       struct device_attribute *attr,
                                       char *buf)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     int ret;
     uint16_t mode;
 
-    ret = nvtec_get_hdmi_sw_mode(nvtec->client, &mode);
+    ret = nvtec_get_hdmi_sw_mode(ec->client, &mode);
     if (ret < 0)
         return 0;
 
@@ -1695,6 +1266,8 @@ static ssize_t nvtec_hdmi_switch_store(struct device *dev,
                                        const char *buf,
                                        size_t count)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     int ret;
     int mode;
 
@@ -1702,7 +1275,7 @@ static ssize_t nvtec_hdmi_switch_store(struct device *dev,
     if (mode < 0)
         return 0;
 
-    ret = nvtec_set_hdmi_sw_mode(nvtec->client, (uint16_t) mode);
+    ret = nvtec_set_hdmi_sw_mode(ec->client, (uint16_t) mode);
     if (ret < 0)
         return 0;
     
@@ -1713,13 +1286,15 @@ static ssize_t nvtec_gpio_input_show(struct device *dev,
                                       struct device_attribute *attr,
                                       char *buf)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     int ret;
     uint8_t value[10];
     char temp_buf[16];
     int i;
 
     for (i = 0; i < 10; i ++) {
-        ret = nvtec_read_gpio_input(nvtec->client, i , &value[i]);
+        ret = nvtec_read_gpio_input(ec->client, i , &value[i]);
         if (ret < 0)
             return 0;
 
@@ -1734,13 +1309,15 @@ static ssize_t nvtec_gpio_output_show(struct device *dev,
                                       struct device_attribute *attr,
                                       char *buf)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     int ret;
     uint8_t value[10];
     char temp_buf[16];
     int i;
 
     for (i = 0; i < 10; i ++) {
-        ret = nvtec_read_gpio_output(nvtec->client, i, &value[i]);
+        ret = nvtec_read_gpio_output(ec->client, i, &value[i]);
         if (ret < 0)
             return 0;
 
@@ -1756,6 +1333,8 @@ static ssize_t nvtec_gpio_output_store(struct device *dev,
                                        const char *buf,
                                        size_t count)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     int ret;
     char *cp, *next;
     int port;
@@ -1769,9 +1348,9 @@ static ssize_t nvtec_gpio_output_store(struct device *dev,
     cp = strsep(&next, " ");
     value = simple_strtoul(cp, NULL, 16);
 
-    ret = nvtec_set_gpio_output(nvtec->client, (uint8_t) port, (uint8_t) value & 0xff);
+    ret = nvtec_set_gpio_output(ec->client, (uint8_t) port, (uint8_t) value & 0xff);
     if (ret < 0) {
-        printk("NvtEC: can't set GPIO\n");
+        dev_err(dev, "Can't set GPIO\n");
         return 0;
     }
 
@@ -1783,6 +1362,8 @@ static ssize_t nvtec_cmd_write_store(struct device *dev,
                                      const char *buf,
                                      size_t count)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     char *cp, *endp, *next;
     int cmd;
     uint8_t value[32];
@@ -1808,24 +1389,23 @@ static ssize_t nvtec_cmd_write_store(struct device *dev,
            value[len++] = simple_strtoul(cp, &endp, 16);
     }
 
-    printk("cmd:0x%02x\n", cmd);
-    printk("value: len=%d\n", len);
-    for (i = 0; i < len; i++)
-        printk("0x%02x\n", value[i]);
-    
+    dev_info(dev, "cmd:0x%02x, len=%d\n", cmd, len);
     if (len == 0)
         return count;
 
-    mutex_lock(&nvtec->lock);
+    for (i = 0; i < len; i++)
+        dev_info(dev, "value[%d] = 0x%02x\n", i, value[i]);
+
+    mutex_lock(&ec->lock);
     if (len == 1) {
-        __nvtec_write_byte(nvtec->client, cmd, value[0]);
+        __nvtec_write_byte(ec->client, cmd, value[0]);
     }else if (len == 2) {
         word_value = value[1] << 8 | value[0];
-        __nvtec_write_word(nvtec->client, cmd, word_value);
+        __nvtec_write_word(ec->client, cmd, word_value);
     } else {
-        __nvtec_write_block(nvtec->client, cmd, len, value);
+        __nvtec_write_block(ec->client, cmd, len, value);
     }
-    mutex_unlock(&nvtec->lock);
+    mutex_unlock(&ec->lock);
     
     return count;
 
@@ -1867,6 +1447,8 @@ static ssize_t nvtec_cmd_read_store(struct device *dev,
                                     const char *buf,
                                     size_t count)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     char *cp, *endp, *next;
     int cmd;
     int i = 0;
@@ -1881,26 +1463,26 @@ static ssize_t nvtec_cmd_read_store(struct device *dev,
     }
 
     cmd &= 0xff;
-    printk("cmd: 0x%02x\n", cmd);
+    dev_info(dev, "cmd: 0x%02x\n", cmd);
 
     cp = strsep(&next, " ");
 
-    mutex_lock(&nvtec->lock);
+    mutex_lock(&ec->lock);
     if (!strncmp(cp, "b", 1)) {
-        __nvtec_read_byte(nvtec->client, cmd, &g_byte);
-        printk("byte: 0x%02x\n", g_byte);
+        __nvtec_read_byte(ec->client, cmd, &g_byte);
+        dev_info(dev, "byte: 0x%02x\n", g_byte);
         read_type = -1;
     } else if (!strncmp(cp, "w", 1)) {
-        __nvtec_read_word(nvtec->client, cmd, &g_word);
-        printk("word: 0x%02x\n", g_word);
+        __nvtec_read_word(ec->client, cmd, &g_word);
+        dev_info(dev, "word: 0x%02x\n", g_word);
         read_type = -2;
     } else if  (!strncmp(cp, "B", 1)) {
-        __nvtec_read_block(nvtec->client, cmd, 32, g_value);
+        __nvtec_read_block(ec->client, cmd, 32, g_value);
         for (i = 0; i <= g_value[0]; i ++)
-            printk("value[%d]: 0x%02x\n", i, g_value[i]);
+            dev_info(dev, "value[%d] = 0x%02x\n", i, g_value[i]);
         read_type = g_value[0];
     }
-    mutex_unlock(&nvtec->lock);
+    mutex_unlock(&ec->lock);
 
     return count;
 }
@@ -1910,6 +1492,8 @@ static ssize_t nvtec_hdmi_p1_driver_store(struct device *dev,
                                     const char *buf,
                                     size_t count)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     char *cp, *endp;
     int strength;
 
@@ -1922,7 +1506,7 @@ static ssize_t nvtec_hdmi_p1_driver_store(struct device *dev,
     if (strength > 3)
         return count;
 
-    nvtec_set_hdmi_p1_strength(nvtec->client, strength);
+    nvtec_set_hdmi_p1_strength(ec->client, strength);
     
     return count;
 }
@@ -1932,6 +1516,8 @@ static ssize_t nvtec_hdmi_p2_driver_store(struct device *dev,
                                     const char *buf,
                                     size_t count)
 {
+    struct miscdevice *mdev = dev_get_drvdata(dev);
+    struct nvtec *ec = container_of(mdev, struct nvtec, miscdev);
     char *cp, *endp;
     int strength;
     
@@ -1944,24 +1530,16 @@ static ssize_t nvtec_hdmi_p2_driver_store(struct device *dev,
     if (strength > 3)
         return count;
 
-    nvtec_set_hdmi_p2_strength(nvtec->client, strength);
+    nvtec_set_hdmi_p2_strength(ec->client, strength);
     
     return count;
 }
 
-/* Daniel Wang */
 static ssize_t nvtec_upgrade_show(struct device *dev,
                                 struct device_attribute *attr,
 				char *buf)
 {
     return sprintf(buf, "%d\n", percentage);
-}
-
-static ssize_t nvtec_fs_upgrade_show(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-    return sprintf(buf, "%d\n", data_flash_return);
 }
 
 static DEVICE_ATTR(state, S_IWUSR | S_IRUGO, nvtec_state_show, nvtec_state_store);
@@ -1974,80 +1552,75 @@ static DEVICE_ATTR(cmd_write, S_IWUSR, NULL, nvtec_cmd_write_store);
 static DEVICE_ATTR(cmd_read, S_IWUSR | S_IRUGO, nvtec_cmd_read_show, nvtec_cmd_read_store);
 static DEVICE_ATTR(hdmi_p1, S_IWUSR, NULL, nvtec_hdmi_p1_driver_store);
 static DEVICE_ATTR(hdmi_p2, S_IWUSR, NULL, nvtec_hdmi_p2_driver_store);
-static DEVICE_ATTR(up_state, S_IRUGO, nvtec_upgrade_show,NULL);		/* Daniel Wang */
-static DEVICE_ATTR(fs_state, S_IRUGO, nvtec_fs_upgrade_show,NULL);	/* Daniel Wang */
+static DEVICE_ATTR(up_state, S_IRUGO, nvtec_upgrade_show,NULL);
 
-static int nvtec_add_sysfs_entry(void)
+static int nvtec_add_sysfs_entry(struct nvtec *ec)
 {
+    struct device *dev = ec->miscdev.this_device;
     int ret;
 
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_state);
+    ret = device_create_file(dev, &dev_attr_state);
     if (ret < 0)
         return ret;
 
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_version);
+    ret = device_create_file(dev, &dev_attr_version);
     if (ret < 0)
         return ret;
 
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_flash_id);
+    ret = device_create_file(dev, &dev_attr_flash_id);
     if (ret < 0)
         return ret;
 
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_hdmi_sw);
+    ret = device_create_file(dev, &dev_attr_hdmi_sw);
     if (ret < 0)
         return ret;
 
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_gpio_in);
+    ret = device_create_file(dev, &dev_attr_gpio_in);
     if (ret < 0)
         return ret;
 
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_gpio_out);
+    ret = device_create_file(dev, &dev_attr_gpio_out);
     if (ret < 0)
         return ret;
 
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_cmd_write);
+    ret = device_create_file(dev, &dev_attr_cmd_write);
     if (ret < 0)
         return ret;
 
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_cmd_read);
+    ret = device_create_file(dev, &dev_attr_cmd_read);
     if (ret < 0)
         return ret;
     
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_hdmi_p1);
+    ret = device_create_file(dev, &dev_attr_hdmi_p1);
     if (ret < 0)
         return ret;
     
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_hdmi_p2);
+    ret = device_create_file(dev, &dev_attr_hdmi_p2);
     if (ret < 0)
         return ret;
 
-    /* Daniel Wang */
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_up_state);
-    if (ret < 0)
-    	return ret;
-
-    ret = device_create_file(nvtec_dev.this_device, &dev_attr_fs_state);
+    ret = device_create_file(dev, &dev_attr_up_state);
     if (ret < 0)
     	return ret;
 
     return 0;
-
 }
 
-static void nvtec_remove_sysfs_entry(void)
+static void nvtec_remove_sysfs_entry(struct nvtec *ec)
 {
-    device_remove_file(nvtec_dev.this_device, &dev_attr_state);
-    device_remove_file(nvtec_dev.this_device, &dev_attr_version);
-    device_remove_file(nvtec_dev.this_device, &dev_attr_flash_id);
-    device_remove_file(nvtec_dev.this_device, &dev_attr_hdmi_sw);
-    device_remove_file(nvtec_dev.this_device, &dev_attr_gpio_in);
-    device_remove_file(nvtec_dev.this_device, &dev_attr_gpio_out);
-    device_remove_file(nvtec_dev.this_device, &dev_attr_cmd_write);
-    device_remove_file(nvtec_dev.this_device, &dev_attr_cmd_read);
-    device_remove_file(nvtec_dev.this_device, &dev_attr_hdmi_p1);
-    device_remove_file(nvtec_dev.this_device, &dev_attr_hdmi_p2);
-    device_remove_file(nvtec_dev.this_device, &dev_attr_up_state);	/* Daniel Wang */
-    device_remove_file(nvtec_dev.this_device, &dev_attr_fs_state);	/* Daniel Wang */
+    struct device *dev = ec->miscdev.this_device;
+
+    device_remove_file(dev, &dev_attr_state);
+    device_remove_file(dev, &dev_attr_version);
+    device_remove_file(dev, &dev_attr_flash_id);
+    device_remove_file(dev, &dev_attr_hdmi_sw);
+    device_remove_file(dev, &dev_attr_gpio_in);
+    device_remove_file(dev, &dev_attr_gpio_out);
+    device_remove_file(dev, &dev_attr_cmd_write);
+    device_remove_file(dev, &dev_attr_cmd_read);
+    device_remove_file(dev, &dev_attr_hdmi_p1);
+    device_remove_file(dev, &dev_attr_hdmi_p2);
+    device_remove_file(dev, &dev_attr_up_state);
 }
 
 
@@ -2057,8 +1630,8 @@ static int __devinit nvtec_i2c_probe(struct i2c_client *client,
     struct nvtec_platform_data *pdata = client->dev.platform_data;
     struct nvtec *ec;
     uint16_t event;
-    char version[32];
-    char lock_status[16];
+    char version[32], ver_str[32];
+	int len = 0;
     int ret = -EINVAL;
 
     if (!pdata) {
@@ -2066,19 +1639,25 @@ static int __devinit nvtec_i2c_probe(struct i2c_client *client,
         return -ENOTSUPP;
     }
 
-    /* Daniel Wang add for check micro-p exist or not */
-    ret = __nvtec_read_block(client, 0xC0, 32, version);
+	/* Check micro-p exist or not */
+	ret = __nvtec_read_block(client, 0xC0, 32, version);
+
+    len = (version[0] >= 31) ? 31 : version[0];
+    strncpy(ver_str, &version[1], len);
+    ver_str[len] = '\0';
+
     if (ret < 0) {
-	dev_err(&client->dev, "Unknown EC firmware version: %d\n", ret);
-	return -ENODEV;
+        dev_err(&client->dev, "Unknown EC firmware version: %d\n", ret);
+        return -ENODEV;
     } else {
-	dev_info(&client->dev, "EC version: %s\n", version);
+        dev_info(&client->dev, "EC version: %s\n", ver_str);
     }
 
     ec = kzalloc(sizeof(struct nvtec), GFP_KERNEL);
     if (NULL == ec)
         return -ENOMEM;
 
+    g_nvtec = ec;
     ec->client = client;
     ec->dev = &client->dev;
     i2c_set_clientdata(client, ec);
@@ -2088,10 +1667,10 @@ static int __devinit nvtec_i2c_probe(struct i2c_client *client,
     BLOCKING_INIT_NOTIFIER_HEAD(&ec->undock_notifier);
     BLOCKING_INIT_NOTIFIER_HEAD(&ec->system_notifier);
     BLOCKING_INIT_NOTIFIER_HEAD(&ec->battery_notifier);
-    BLOCKING_INIT_NOTIFIER_HEAD(&ec->cir_notifier);
+
 
     /* waiting lock hardware enable notify*/
-    ec->switch_gpio_notifier.notifier_call = switch_gpio_notify;
+    ec->switch_gpio_notifier.notifier_call = switch_lock_notify;
     switch_gpio_lock_hardware_notifier_register(&ec->switch_gpio_notifier);
     
     if (client->irq) {
@@ -2102,18 +1681,22 @@ static int __devinit nvtec_i2c_probe(struct i2c_client *client,
         }
     }
 
-    /* Daniel Wang */
     ec->request_pin = pdata->request_pin;
     ec->pwr_state_pin = pdata->pwr_state_pin;
+    ec->ap_wake_pin = pdata->ap_wake_pin;
+    if (ec->request_pin == 0 || ec->pwr_state_pin == 0 || ec->ap_wake_pin == 0) {
+        dev_err(&client->dev, "Invalid GPIOs definition\n");
+        goto err_gpio;
+    }
+
     if ((machine_is_avalon()) && (pdata->hdmi_sw_pin != 0))
-	ec->hdmi_sw_pin = pdata->hdmi_sw_pin; 	
+        ec->hdmi_sw_pin = pdata->hdmi_sw_pin;
 
     gpio_set_value(ec->request_pin, 1);
     gpio_set_value(ec->pwr_state_pin, 1);
     if ((machine_is_avalon()) && (ec->hdmi_sw_pin != 0))
-	gpio_set_value(ec->hdmi_sw_pin, 1);
+        gpio_set_value(ec->hdmi_sw_pin, 1);
 
-    ec->ap_wake_pin = pdata->ap_wake_pin;
 
     /* clean event */
     while (gpio_get_value(ec->ap_wake_pin) == 0) {
@@ -2122,54 +1705,57 @@ static int __devinit nvtec_i2c_probe(struct i2c_client *client,
             break;
     }
 
-    /*
-    nvtec_set_hdmi_sw_mode(client, NVTEC_HDMI_SW_AUTO);
-    */
-
     ret = nvtec_add_subdevs(ec, pdata);
     if (ret) {
         dev_err(&client->dev, "add devices failed: %d\n", ret);
         goto err_add_devs;
     }
 
-    ret = misc_register(&nvtec_dev);
+    ec->miscdev.parent = ec->dev;
+    ec->miscdev.minor = NVTEC_MINOR;
+    ec->miscdev.name = "nvtec";
+    ec->miscdev.fops = &nvtec_fops;
+    ret = misc_register(&ec->miscdev);
     if (ret) {
         dev_err(&client->dev, "fail to register misc device: %d\n", ret);
         goto err_misc_reg;
     }
 
-    ret = nvtec_add_sysfs_entry();
+    ret = nvtec_add_sysfs_entry(ec);
     if (ret) {
         dev_err(&client->dev, "fail to add sysfs entry: %d\n", ret);
         goto err_add_sysfs;
     }
 
-    /* Daniel Wang */
-    wake_lock_init(&upgrade_lock, WAKE_LOCK_SUSPEND, "NvUpgradeSuspendLock");
+    wake_lock_init(&ec->upgrade_lock, WAKE_LOCK_SUSPEND, "NvUpgradeSuspendLock");
 
-    nvtec = ec;
-
-    /* Daniel Wang */
-    /*
-    ret = nvtec_set_led_mode(client,default_mcu_mode ? 0x0 : 0x200);
-    if (ret < 0){ 
-	dev_err(&client->dev, "configure suspend led failed: %d\n", ret);
-    }
-    */
-
-    nvtec_get_lock_key_status(client, lock_status);
+    /* Get the switch lock enable status */
+    nvtec_get_switch_lock_enable(client, &ec->switch_lock_enabled);
 
     return 0;
+
  err_add_sysfs:
-    misc_deregister(&nvtec_dev);
+    misc_deregister(&ec->miscdev);
  err_misc_reg:
     nvtec_remove_subdevs(ec);
+ err_gpio:
  err_add_devs:
     if (client->irq)
         free_irq(client->irq, ec);
  err_irq_init:
     switch_gpio_lock_hardware_notifier_unregister(&ec->switch_gpio_notifier);
+    mutex_destroy(&ec->lock);
+
+    if (ec->request_pin)
+        gpio_free(ec->request_pin);
+    if (ec->pwr_state_pin)
+        gpio_free(ec->pwr_state_pin);
+    if (ec->ap_wake_pin)
+        gpio_free(ec->ap_wake_pin);
+
+    g_nvtec = NULL;
     kfree(ec);
+
     return ret;
 }
 
@@ -2177,10 +1763,10 @@ static int __devexit nvtec_i2c_remove(struct i2c_client *client)
 {
     struct nvtec *ec = i2c_get_clientdata(client);
 
-    wake_lock_destroy(&upgrade_lock);	/* Daniel Wang */
+    wake_lock_destroy(&ec->upgrade_lock);
 
     gpio_free(ec->request_pin);
-    gpio_free(ec->pwr_state_pin);	/* Daniel Wang */
+    gpio_free(ec->pwr_state_pin);
     gpio_free(ec->ap_wake_pin);
 
     switch_gpio_lock_hardware_notifier_unregister(&ec->switch_gpio_notifier);
@@ -2188,11 +1774,20 @@ static int __devexit nvtec_i2c_remove(struct i2c_client *client)
     if (client->irq)
         free_irq(client->irq, ec);
 
+    nvtec_remove_sysfs_entry(ec);
+    misc_deregister(&ec->miscdev);
+    nvtec_remove_subdevs(ec);
+    mutex_destroy(&ec->lock);
+
+    if (ec->request_pin)
+        gpio_free(ec->request_pin);
+    if (ec->pwr_state_pin)
+        gpio_free(ec->pwr_state_pin);
+    if (ec->ap_wake_pin)
+        gpio_free(ec->ap_wake_pin);
+
+    g_nvtec = NULL;
     kfree(ec);
-
-    nvtec_remove_sysfs_entry();
-
-    misc_deregister(&nvtec_dev);
 
     return 0;
 }
@@ -2224,7 +1819,7 @@ static void nvtec_i2c_shutdown(struct i2c_client *client)
     if (client->irq)
         disable_irq(client->irq);
     
-    nvtec_set_state(client, NVTEC_STATE_S4);	/* Daniel Wang */
+    nvtec_set_state(client, NVTEC_STATE_S4);
 }
 
 static const struct i2c_device_id nvtec_id_table[] = {

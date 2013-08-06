@@ -1,7 +1,25 @@
 /*
  * Common function shared by Linux WEXT, cfg80211 and p2p drivers
  *
- * $Copyright Open Broadcom Corporation$
+ * Copyright (C) 1999-2011, Broadcom Corporation
+ * 
+ *         Unless you and Broadcom execute a separate written software license
+ * agreement governing use of this software, this software is licensed to you
+ * under the terms of the GNU General Public License version 2 (the "GPL"),
+ * available at http://www.broadcom.com/licenses/GPLv2.php, with the
+ * following added to such license:
+ * 
+ *      As a special exception, the copyright holders of this software give you
+ * permission to link this software with independent modules, and to copy and
+ * distribute the resulting executable under terms of your choice, provided that
+ * you also meet, for each linked independent module, the terms and conditions of
+ * the license of that module.  An independent module is a module which is not
+ * derived from this software.  The special exception does not apply to any
+ * modifications of the software.
+ * 
+ *      Notwithstanding the above, under no circumstances may you combine this
+ * software in any way with any other Broadcom software provided under a license
+ * other than the GPL, without Broadcom's express prior written consent.
  *
  * $Id: wldev_common.c,v 1.1.4.1.2.14 2011-02-09 01:40:07 $
  */
@@ -348,4 +366,54 @@ int wldev_set_country(
 	WLDEV_ERROR(("%s: set country for %s as %s rev %d\n",
 		__FUNCTION__, country_code, cspec.ccode, cspec.rev));
 	return 0;
+}
+
+/*
+ *  softap channel autoselect
+ */
+int wldev_get_auto_channel(struct net_device *dev, int *chan)
+{
+	int chosen = 0;
+	wl_uint32_list_t request;
+	int retry = 0;
+	int updown = 0;
+	int ret = 0;
+	wlc_ssid_t null_ssid;
+
+	memset(&null_ssid, 0, sizeof(wlc_ssid_t));
+	ret |= wldev_ioctl(dev, WLC_UP, &updown, sizeof(updown), true);
+
+	ret |= wldev_ioctl(dev, WLC_SET_SSID, &null_ssid, sizeof(null_ssid), true);
+
+	request.count = htod32(0);
+	ret = wldev_ioctl(dev, WLC_START_CHANNEL_SEL, &request, sizeof(request), true);
+	if (ret < 0) {
+		WLDEV_ERROR(("can't start auto channel scan:%d\n", ret));
+		goto fail;
+	}
+
+	while  (retry++ < 15) {
+
+		bcm_mdelay(350);
+
+		ret = wldev_ioctl(dev, WLC_GET_CHANNEL_SEL, &chosen, sizeof(chosen), false);
+
+		if ((ret == 0) && (dtoh32(chosen) != 0)) {
+			*chan = (uint16)chosen & 0x00FF;  /* covert chanspec --> chan number  */
+			printf("%s: Got channel = %d, attempt:%d\n",
+				__FUNCTION__, *chan, retry);
+			break;
+		}
+	}
+
+	if ((ret = wldev_ioctl(dev, WLC_DOWN, &updown, sizeof(updown), true)) < 0) {
+		WLDEV_ERROR(("%s fail to WLC_DOWN ioctl err =%d\n", __FUNCTION__, ret));
+		goto fail;
+	}
+
+fail :
+	if (ret < 0) {
+		WLDEV_ERROR(("%s: return value %d\n", __FUNCTION__, ret));
+	}
+	return ret;
 }

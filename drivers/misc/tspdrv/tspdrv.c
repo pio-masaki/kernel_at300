@@ -6,7 +6,7 @@
 ** Description: 
 **     TouchSense Kernel Module main entry-point.
 **
-** Portions Copyright (c) 2008-2011 Immersion Corporation. All Rights Reserved. 
+** Portions Copyright (c) 2008-2012 Immersion Corporation. All Rights Reserved. 
 **
 ** This file contains Original Code and/or Modifications of Original Code 
 ** as defined in and that are subject to the GNU Public License v2 - 
@@ -29,11 +29,6 @@
 #ifndef __KERNEL__
 #define __KERNEL__
 #endif
-/*
-#ifndef MODULE
-#define MODULE
-#endif
-*/
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -43,6 +38,7 @@
 #include <linux/miscdevice.h>
 #include <linux/platform_device.h>
 #include <asm/uaccess.h>
+#include <asm/atomic.h>
 #include <tspdrv.h>
 
 static int g_nTimerPeriodMs = 5; /* 5ms timer by default. This variable could be used by the SPI.*/
@@ -53,7 +49,7 @@ static int g_nTimerPeriodMs = 5; /* 5ms timer by default. This variable could be
 #endif
 
 /* Device name and version information */
-#define VERSION_STR " v3.5.12.0\n"                  /* DO NOT CHANGE - this is auto-generated */
+#define VERSION_STR " v3.6.12.0\n"                  /* DO NOT CHANGE - this is auto-generated */
 #define VERSION_STR_LEN 16                          /* account extra space for future extra digits in version number */
 static char g_szDeviceName[  (VIBE_MAX_DEVICE_NAME_LENGTH 
                             + VERSION_STR_LEN)
@@ -62,6 +58,10 @@ static size_t g_cchDeviceName;                      /* initialized in init_modul
 
 /* Flag indicating whether the driver is in use */
 static char g_bIsPlaying = false;
+
+/* Flag indicating whether the debug level*/
+static atomic_t g_nDebugLevel;
+
 
 /* Buffer to store data sent to SPI */
 #define MAX_SPI_BUFFER_SIZE (NUM_ACTUATORS * (VIBE_OUTPUT_SAMPLE_SIZE + SPI_HEADER_SIZE))
@@ -90,6 +90,30 @@ static int g_nMajor = 0;
 #else
     #include <VibeOSKernelLinuxTime.c>
 #endif
+
+asmlinkage void _DbgOut(int level, const char *fmt,...)
+{
+    static char printk_buf[MAX_DEBUG_BUFFER_LENGTH];
+    static char prefix[6][4] = 
+        {" * ", " ! ", " ? ", " I ", " V", " O "};
+
+    int nDbgLevel = atomic_read(&g_nDebugLevel);
+
+    if (0 <= level && level <= nDbgLevel) {
+        va_list args;
+        int ret;
+        size_t size = sizeof(printk_buf);
+
+        va_start(args, fmt);
+
+        ret = scnprintf(printk_buf, size, KERN_EMERG "%s:%s %s",
+             MODULE_NAME, prefix[level], fmt);
+        if (ret >= size) return;
+
+        vprintk(printk_buf, args);
+        va_end(args);
+    }
+}
 
 /* File IO */
 static int open(struct inode *inode, struct file *file);
@@ -128,7 +152,7 @@ static struct miscdevice miscdev =
 
 static int open(struct inode *inode, struct file *file) 
 {
-    DbgOut((KERN_INFO "tspdrv: open.\n"));
+    DbgOut((DBL_INFO, "tspdrv: open.\n"));
 
     if (!try_module_get(THIS_MODULE)) return -ENODEV;
 
@@ -137,7 +161,7 @@ static int open(struct inode *inode, struct file *file)
 
 static int release(struct inode *inode, struct file *file) 
 {
-    DbgOut((KERN_INFO "tspdrv: release.\n"));
+    DbgOut((DBL_INFO, "tspdrv: release.\n"));
 
     /* 
     ** Reset force and stop timer when the driver is closed, to make sure
@@ -168,7 +192,7 @@ static ssize_t read(struct file *file, char *buf, size_t count, loff_t *ppos)
     if (0 != copy_to_user(buf, g_szDeviceName + (*ppos), nBufSize)) 
     {
         /* Failed to copy all the data, exit */
-        DbgOut((KERN_ERR "tspdrv: copy_to_user failed.\n"));
+        DbgOut((DBL_ERROR, "tspdrv: copy_to_user failed.\n"));
         return 0;
     }
 
@@ -187,7 +211,20 @@ static ssize_t write(struct file *file, const char *buf, size_t count, loff_t *p
     */
     if (file->private_data != (void*)TSPDRV_MAGIC_NUMBER) 
     {
-        DbgOut((KERN_ERR "tspdrv: unauthorized write.\n"));
+        DbgOut((DBL_ERROR, "tspdrv: unauthorized write.\n"));
+        return 0;
+    }
+
+    /* 
+    ** Ignore packets that have size smaller than SPI_HEADER_SIZE or bigger than MAX_SPI_BUFFER_SIZE.
+    ** Please note that the daemon may send an empty buffer (count == SPI_HEADER_SIZE)
+    ** during quiet time between effects while playing a Timeline effect in order to maintain
+    ** correct timing: if "count" is equal to SPI_HEADER_SIZE, the call to VibeOSKernelLinuxStartTimer()
+    ** will just wait for the next timer tick.
+    */
+    if ((count < SPI_HEADER_SIZE) || (count > MAX_SPI_BUFFER_SIZE))
+    {
+        DbgOut((DBL_ERROR, "tspdrv: invalid buffer size.\n"));
         return 0;
     }
 
@@ -195,14 +232,14 @@ static ssize_t write(struct file *file, const char *buf, size_t count, loff_t *p
     if (0 != copy_from_user(g_cWriteBuffer, buf, count))
     {
         /* Failed to copy all the data, exit */
-        DbgOut((KERN_ERR "tspdrv: copy_from_user failed.\n"));
+        DbgOut((DBL_ERROR, "tspdrv: copy_from_user failed.\n"));
         return 0;
     }
 
     /* Extract force output samples and save them in an internal buffer */
     if (!SaveOutputData(g_cWriteBuffer, count))
     {
-        DbgOut((KERN_ERR "tspdrv: SaveOutputData failed.\n"));
+        DbgOut((DBL_ERROR, "tspdrv: SaveOutputData failed.\n"));
         return 0;
     }
 
@@ -239,6 +276,27 @@ static int ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsig
         case TSPDRV_GET_NUM_ACTUATORS:
             return NUM_ACTUATORS;
 
+        case TSPDRV_SET_DBG_LEVEL:
+            {
+                long nDbgLevel;
+                if (0 != copy_from_user((void *)&nDbgLevel, (const void __user *)arg, sizeof(long))) {
+                    /* Error copying the data */
+                    DbgOut((DBL_ERROR, "copy_from_user failed to copy debug level data.\n"));
+                    return -1;
+                }
+
+                if (DBL_TEMP <= nDbgLevel &&  nDbgLevel <= DBL_OVERKILL) {
+                    atomic_set(&g_nDebugLevel, nDbgLevel);
+                } else {
+                    DbgOut((DBL_ERROR, "Invalid debug level requested, ignored."));
+                }
+
+                break;
+            }
+
+        case TSPDRV_GET_DBG_LEVEL:
+            return atomic_read(&g_nDebugLevel);
+
         case TSPDRV_SET_DEVICE_PARAMETER:
             {
                 device_parameter deviceParam;
@@ -246,7 +304,7 @@ static int ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsig
                 if (0 != copy_from_user((void *)&deviceParam, (const void __user *)arg, sizeof(deviceParam)))
                 {
                     /* Error copying the data */
-                    DbgOut((KERN_ERR "tspdrv: copy_from_user failed to copy kernel parameter data.\n"));
+                    DbgOut((DBL_ERROR, "tspdrv: copy_from_user failed to copy kernel parameter data.\n"));
                     return -1;
                 }
 
@@ -272,7 +330,7 @@ static int ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsig
                     case VIBE_KP_CFG_FREQUENCY_PARAM6:
                         if (0 > ImmVibeSPI_ForceOut_SetFrequency(deviceParam.nDeviceIndex, deviceParam.nDeviceParamID, deviceParam.nDeviceParamValue))
                         {
-                            DbgOut((KERN_ERR "tspdrv: cannot set device frequency parameter.\n"));
+                            DbgOut((DBL_ERROR, "tspdrv: cannot set device frequency parameter.\n"));
                             return -1;
                         }
                         break;
@@ -286,25 +344,25 @@ static int tspdrv_probe(struct platform_device *pdev)
 {
     int ret, i;   /* initialized below */
 
-    DbgOut((KERN_INFO "tspdrv: init_module.\n"));
+    DbgOut((DBL_INFO, "tspdrv: init_module.\n"));
 
     ret = vibrator_init(pdev);
     if (ret) {
-        DbgOut((KERN_ERR "tspdrv: vibrator initial fail\n"));
+        DbgOut((DBL_ERROR, "tspdrv: vibrator initial fail\n"));
         return ret;
     }
 
 #ifdef IMPLEMENT_AS_CHAR_DRIVER
     g_nMajor = register_chrdev(0, MODULE_NAME, &fops);
     if (g_nMajor < 0) {
-        DbgOut((KERN_ERR "tspdrv: can't get major number.\n"));
+        DbgOut((DBL_ERROR, "tspdrv: can't get major number.\n"));
         vibrator_free(pdev);
         return g_nMajor;
     }
 #else
     ret = misc_register(&miscdev);
 	if (ret) {
-        DbgOut((KERN_ERR "tspdrv: misc_register failed.\n"));
+        DbgOut((DBL_ERROR, "tspdrv: misc_register failed.\n"));
         vibrator_free(pdev);
 		return ret;
 	}
@@ -335,7 +393,7 @@ static int tspdrv_probe(struct platform_device *pdev)
 
 static int tspdrv_remove(struct platform_device *pdev)
 {
-    DbgOut((KERN_INFO "tspdrv: cleanup_module.\n"));
+    DbgOut((DBL_INFO, "tspdrv: cleanup_module.\n"));
 
     DbgRecorderTerminate(());
 
@@ -356,10 +414,10 @@ static int tspdrv_remove(struct platform_device *pdev)
 static int tspdrv_suspend(struct platform_device *pdev, pm_message_t state) 
 {
     if (g_bIsPlaying) {
-        DbgOut((KERN_INFO "tspdrv: can't suspend, still playing effects.\n"));
+        DbgOut((DBL_INFO, "tspdrv: can't suspend, still playing effects.\n"));
         return -EBUSY;
     } else {
-        DbgOut((KERN_INFO "tspdrv: suspend.\n"));
+        DbgOut((DBL_INFO, "tspdrv: suspend.\n"));
         return 0;
     }
 }
@@ -367,7 +425,7 @@ static int tspdrv_suspend(struct platform_device *pdev, pm_message_t state)
 static int tspdrv_resume(struct platform_device *pdev) 
 {	
 	//update_nvdock_in_status();
-    DbgOut((KERN_INFO "tspdrv: resume.\n"));
+    DbgOut((DBL_INFO, "tspdrv: resume.\n"));
 
 	return 0;   /* can resume */
 }

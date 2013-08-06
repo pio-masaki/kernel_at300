@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, NVIDIA Corporation.
+ * Copyright (c) 2012, NVIDIA CORPORATION.  All rights reserved
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -532,7 +532,7 @@ static struct actmon_dev actmon_dev_avp = {
 	.boost_freq_step	= 8000,
 	.boost_up_coef		= 200,
 	.boost_down_coef	= 50,
-	.boost_up_threshold	= 75,
+	.boost_up_threshold	= 85,
 	.boost_down_threshold	= 50,
 
 	.up_wmark_window	= 1,
@@ -565,6 +565,8 @@ static int actmon_pm_notify(struct notifier_block *nb,
 			actmon_dev_suspend(actmon_devices[i]);
 		break;
 	case PM_POST_SUSPEND:
+		actmon_writel(actmon_sampling_period - 1,
+			      ACTMON_GLB_PERIOD_CTRL);
 		for (i = 0; i < ARRAY_SIZE(actmon_devices); i++)
 			actmon_dev_resume(actmon_devices[i]);
 		break;

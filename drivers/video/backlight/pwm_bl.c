@@ -34,19 +34,12 @@ struct pwm_bl_data {
 	unsigned int		lth_brightness;
 	int			(*notify)(struct device *,
 					  int brightness);
+	void			(*notify_after)(struct device *,
+					int brightness);
 	int			(*check_fb)(struct device *, struct fb_info *);
 	void (*backlight_enable)(int);
 	bool pwm_enabled;
 };
-
-#ifndef CONFIG_MACH_SPHINX
-static struct backlight_device *bl_dev = NULL;
-struct backlight_device *get_backlight_dev(void)
-{
-	return bl_dev;
-}
-EXPORT_SYMBOL(get_backlight_dev);
-#endif
 
 static int pwm_backlight_update_status(struct backlight_device *bl)
 {
@@ -71,15 +64,22 @@ static int pwm_backlight_update_status(struct backlight_device *bl)
 			pb->pwm_enabled = false;
 		}
 	} else {
+		if (!pb->pwm_enabled && brightness < 10 )
+				brightness = 10;  /* min start brigtness level for fade in effect and lcd power seq. */
+
 		brightness = pb->lth_brightness + brightness * BRIGHTNESS_RATE /
 			100 * (pb->period - pb->lth_brightness) / max;
 		pwm_config(pb->pwm, brightness, pb->period);
 		pwm_enable(pb->pwm);
+
 		if (!pb->pwm_enabled) {
 			pb->pwm_enabled = true;
 			pb->backlight_enable(1);
 		}
 	}
+
+	if (pb->notify_after)
+		pb->notify_after(pb->dev, brightness);
 
 	return 0;
 }
@@ -131,6 +131,7 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 
 	pb->period = data->pwm_period_ns;
 	pb->notify = data->notify;
+	pb->notify_after = data->notify_after;
 	pb->check_fb = data->check_fb;
 	pb->backlight_enable = data->backlight_enable;
 	pb->lth_brightness = data->lth_brightness *
@@ -160,9 +161,7 @@ static int pwm_backlight_probe(struct platform_device *pdev)
 	backlight_update_status(bl);
 
 	platform_set_drvdata(pdev, bl);
-#ifndef CONFIG_MACH_SPHINX
-	bl_dev = bl;
-#endif
+
 	return 0;
 
 err_bl:
@@ -216,6 +215,8 @@ static int pwm_backlight_suspend(struct platform_device *pdev,
 		pb->pwm_enabled = false;
 	}
 
+	if (pb->notify_after)
+		pb->notify_after(pb->dev, 0);
 	return 0;
 }
 

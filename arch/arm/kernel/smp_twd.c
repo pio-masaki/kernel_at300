@@ -201,7 +201,7 @@ void __cpuinit twd_timer_setup(struct clock_event_device *clk)
 	else
 		twd_calibrate_rate();
 
-    __raw_writel(0, twd_base + TWD_TIMER_CONTROL);
+	__raw_writel(0, twd_base + TWD_TIMER_CONTROL);
 
 	clk->name = "local_timer";
 	clk->features = CLOCK_EVT_FEAT_PERIODIC | CLOCK_EVT_FEAT_ONESHOT |
@@ -210,12 +210,11 @@ void __cpuinit twd_timer_setup(struct clock_event_device *clk)
 	clk->set_mode = twd_set_mode;
 	clk->set_next_event = twd_set_next_event;
 
-    clockevents_config_and_register(clk, twd_timer_rate,
+	__get_cpu_var(twd_ce) = clk;
+
+	clockevents_config_and_register(clk, twd_timer_rate,
 					0xf, 0xffffffff);
 
 	/* Make sure our local interrupt controller has this enabled */
 	gic_enable_ppi(clk->irq);
-
-	__get_cpu_var(twd_ce) = clk;
-	
 }

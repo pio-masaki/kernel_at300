@@ -1252,7 +1252,7 @@ works_in_polling_mode:
 	{
 		goodix_proc_entry->write_proc = goodix_update_write;
 		goodix_proc_entry->read_proc = goodix_update_read;
-		goodix_proc_entry->owner =THIS_MODULE;
+		/* goodix_proc_entry->owner =THIS_MODULE; */
 	}
 #endif
 	goodix_debug_sysfs_init();

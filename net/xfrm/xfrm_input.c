@@ -162,7 +162,7 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 
 		skb->sp->xvec[skb->sp->len++] = x;
 
-		spin_lock(&x->lock);
+		spin_lock_bh(&x->lock);
 		if (unlikely(x->km.state != XFRM_STATE_VALID)) {
 			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATEINVALID);
 			goto drop_unlock;
@@ -183,7 +183,7 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 			goto drop_unlock;
 		}
 
-		spin_unlock(&x->lock);
+		spin_unlock_bh(&x->lock);
 
 		seq_hi = htonl(xfrm_replay_seqhi(x, seq));
 
@@ -198,7 +198,7 @@ int xfrm_input(struct sk_buff *skb, int nexthdr, __be32 spi, int encap_type)
 			return 0;
 
 resume:
-		spin_lock(&x->lock);
+		spin_lock_bh(&x->lock);
 		if (nexthdr <= 0) {
 			if (nexthdr == -EBADMSG) {
 				xfrm_audit_state_icvfail(x, skb,
@@ -212,12 +212,17 @@ resume:
 		/* only the first xfrm gets the encap type */
 		encap_type = 0;
 
+		if (async && x->repl->check(x, skb, seq)) {
+			XFRM_INC_STATS(net, LINUX_MIB_XFRMINSTATESEQERROR);
+			goto drop_unlock;
+		}
+
 		x->repl->advance(x, seq);
 
 		x->curlft.bytes += skb->len;
 		x->curlft.packets++;
 
-		spin_unlock(&x->lock);
+		spin_unlock_bh(&x->lock);
 
 		XFRM_MODE_SKB_CB(skb)->protocol = nexthdr;
 
@@ -264,7 +269,7 @@ resume:
 	}
 
 drop_unlock:
-	spin_unlock(&x->lock);
+	spin_unlock_bh(&x->lock);
 drop:
 	kfree_skb(skb);
 	return 0;

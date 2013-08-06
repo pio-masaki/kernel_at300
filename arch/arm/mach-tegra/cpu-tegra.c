@@ -7,7 +7,7 @@
  *	Colin Cross <ccross@google.com>
  *	Based on arch/arm/plat-omap/cpu-omap.c, (C) 2005 Nokia Corporation
  *
- * Copyright (C) 2010-2012 NVIDIA Corporation
+ * Copyright (C) 2010-2012 NVIDIA CORPORATION. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -36,7 +36,6 @@
 
 #include <asm/system.h>
 
-#include <mach/hardware.h>
 #include <mach/clk.h>
 #include <mach/edp.h>
 
@@ -243,12 +242,12 @@ int tegra_edp_update_thermal_zone(int temperature)
 
 	/* Update cpu rate if cpufreq (at least on cpu0) is already started;
 	   alter cpu dvfs table for this thermal zone if necessary */
-	tegra_cpu_dvfs_alter(edp_thermal_index, true);
+	tegra_cpu_dvfs_alter(edp_thermal_index, &edp_cpumask, true, 0);
 	if (target_cpu_speed[0]) {
 		edp_update_limit();
 		tegra_cpu_set_speed_cap(NULL);
 	}
-	tegra_cpu_dvfs_alter(edp_thermal_index, false);
+	tegra_cpu_dvfs_alter(edp_thermal_index, &edp_cpumask, false, 0);
 	mutex_unlock(&tegra_cpu_lock);
 
 	return ret;
@@ -263,13 +262,15 @@ int tegra_system_edp_alarm(bool alarm)
 	system_edp_alarm = alarm;
 
 	/* Update cpu rate if cpufreq (at least on cpu0) is already started
-	   and cancel emergency throttling after edp limit is applied */
+	   and cancel emergency throttling after either edp limit is applied
+	   or alarm is canceled */
 	if (target_cpu_speed[0]) {
 		edp_update_limit();
 		ret = tegra_cpu_set_speed_cap(NULL);
-		if (!ret && alarm)
-			tegra_edp_throttle_cpu_now(0);
 	}
+	if (!ret || !alarm)
+		tegra_edp_throttle_cpu_now(0);
+
 	mutex_unlock(&tegra_cpu_lock);
 
 	return ret;
@@ -326,19 +327,23 @@ static int tegra_cpu_edp_notify(
 		new_speed = edp_governor_speed(cpu_speed);
 		if (new_speed < cpu_speed) {
 			ret = tegra_cpu_set_speed_cap(NULL);
-			if (ret) {
-				cpu_clear(cpu, edp_cpumask);
-				edp_update_limit();
-			}
-
-			printk(KERN_DEBUG "tegra CPU:%sforce EDP limit %u kHz"
+			printk(KERN_DEBUG "cpu-tegra:%sforce EDP limit %u kHz"
 				"\n", ret ? " failed to " : " ", new_speed);
+		}
+		if (!ret)
+			ret = tegra_cpu_dvfs_alter(
+				edp_thermal_index, &edp_cpumask, false, event);
+		if (ret) {
+			cpu_clear(cpu, edp_cpumask);
+			edp_update_limit();
 		}
 		mutex_unlock(&tegra_cpu_lock);
 		break;
 	case CPU_DEAD:
 		mutex_lock(&tegra_cpu_lock);
 		cpu_clear(cpu, edp_cpumask);
+		tegra_cpu_dvfs_alter(
+			edp_thermal_index, &edp_cpumask, true, event);
 		edp_update_limit();
 		tegra_cpu_set_speed_cap(NULL);
 		mutex_unlock(&tegra_cpu_lock);
@@ -430,9 +435,6 @@ static int __init tegra_cpu_debug_init(void)
 	if (!cpu_tegra_debugfs_root)
 		return -ENOMEM;
 
-	if (tegra_throttle_debug_init(cpu_tegra_debugfs_root))
-		goto err_out;
-
 	if (tegra_edp_debug_init(cpu_tegra_debugfs_root))
 		goto err_out;
 
@@ -468,7 +470,7 @@ unsigned int tegra_getspeed(unsigned int cpu)
 	return rate;
 }
 
-static int tegra_update_cpu_speed(unsigned long rate)
+int tegra_update_cpu_speed(unsigned long rate)
 {
 	int ret = 0;
 	struct cpufreq_freqs freqs;
@@ -593,6 +595,20 @@ int tegra_cpu_set_speed_cap(unsigned int *speed_cap)
 	if (ret == 0)
 		tegra_auto_hotplug_governor(new_speed, false);
 	return ret;
+}
+
+int tegra_suspended_target(unsigned int target_freq)
+{
+	unsigned int new_speed = target_freq;
+
+	if (!is_suspended)
+		return -EBUSY;
+
+	/* apply only "hard" caps */
+	new_speed = tegra_throttle_governor_speed(new_speed);
+	new_speed = edp_governor_speed(new_speed);
+
+	return tegra_update_cpu_speed(new_speed);
 }
 
 static int tegra_target(struct cpufreq_policy *policy,

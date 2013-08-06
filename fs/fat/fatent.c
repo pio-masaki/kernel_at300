@@ -95,7 +95,7 @@ static int fat12_ent_bread(struct super_block *sb, struct fat_entry *fatent,
 err_brelse:
 	brelse(bhs[0]);
 err:
-	printk(KERN_ERR "FAT: FAT read failed (blocknr %llu)\n", (llu)blocknr);
+	fat_msg(sb, KERN_ERR, "FAT read failed (blocknr %llu)", (llu)blocknr);
 	return -EIO;
 }
 
@@ -103,16 +103,13 @@ static int fat_ent_bread(struct super_block *sb, struct fat_entry *fatent,
 			 int offset, sector_t blocknr)
 {
 	struct fatent_operations *ops = MSDOS_SB(sb)->fatent_ops;
-        WARN_ON(blocknr < MSDOS_SB(sb)->fat_start);
+
+	WARN_ON(blocknr < MSDOS_SB(sb)->fat_start);
 	fatent->fat_inode = MSDOS_SB(sb)->fat_inode;
 	fatent->bhs[0] = sb_bread(sb, blocknr);
 	if (!fatent->bhs[0]) {
-                if(0)
-                {
-		    printk(KERN_ERR "FAT: FAT read failed (blocknr %llu)\n",
+		fat_msg(sb, KERN_ERR, "FAT read failed (blocknr %llu)",
 		       (llu)blocknr);
-                 
-                }
 		return -EIO;
 	}
 	fatent->nr_bhs = 1;
