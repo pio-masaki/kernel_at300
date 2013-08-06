@@ -1,0 +1,27 @@
+menuconfig SWITCH
+	tristate "Switch class support"
+	help
+	  Say Y here to enable switch class support. This allows
+	  monitoring switches by userspace via sysfs and uevent.
+
+if SWITCH
+
+config SWITCH_GPIO
+	tristate "GPIO Swith support"
+	depends on GENERIC_GPIO
+	help
+	  Say Y here to enable GPIO based switch support.
+
+config SWITCH_AST_DOCK
+        tristate "Dock driver for ast board"
+	default n
+        help
+          Say Y here if you want to enable a dock switch device node
+
+config SENSORS_IQS128
+        tristate "IQS128 cap sensor driver"
+	default n
+        help
+          Say Y here if you want to enable iqs128 cap sensor driver
+
+endif # SWITCH
